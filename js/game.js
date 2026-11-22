@@ -108,13 +108,18 @@
         ctx.strokeRect(a.x, a.y, c.x - a.x, c.y - a.y);
       } else {
         ctx.fillStyle = 'rgba(0,0,0,0.38)'; ctx.fillRect(a.x, a.y, c.x - a.x, c.y - a.y);
-        var x0 = Math.max(a.x, 0), x1 = Math.min(c.x, V.w), y0 = Math.max(a.y, 0), y1 = Math.min(c.y, V.h);
-        if (x1 - x0 > 120 && y1 - y0 > 40) {
-          var msg = map.getZoom() < 12 ? 'Zoom in to load homes and jobs' : chunkFailed[k] && Date.now() - chunkFailed[k] < 90000 ? 'Could not load, retrying soon' : 'Loading homes and jobs…';
-          ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillText(msg, (x0 + x1) / 2, (y0 + y1) / 2);
+        if (map.getZoom() >= LOAD_ZOOM) {
+          var x0 = Math.max(a.x, 0), x1 = Math.min(c.x, V.w), y0 = Math.max(a.y, 0), y1 = Math.min(c.y, V.h);
+          if (x1 - x0 > 120 && y1 - y0 > 40) {
+            var msg = chunkFailed[k] && Date.now() - chunkFailed[k] < 90000 ? 'Could not load, retrying soon' : 'Loading homes and jobs…';
+            ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillText(msg, (x0 + x1) / 2, (y0 + y1) / 2);
+          }
         }
       }
     });
+    if (map.getZoom() < LOAD_ZOOM && keys.some(function (k) { return !(state.chunks && state.chunks[k]); })) {
+      ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fillText('Zoom in closer to load homes and jobs in the dark areas', V.w / 2, V.h * 0.3);
+    }
     ctx.restore();
   }
 
@@ -486,7 +491,13 @@
     });
   }
 
+  function updateLegend() {
+    var el = $('legend'); if (!el) return;
+    el.className = state && ui.showDemand && !ui.legendHidden ? 'legend' : 'legend hidden';
+  }
+
   function renderDock() {
+    updateLegend();
     $('dock').innerHTML =
       dockBtn('move', ICON.hand, 'Move', ui.tool === 'move' && !ui.editing && ui.sheet !== 'lines') +
       dockBtn('station', ICON.pin, 'Station', ui.tool === 'station') +
@@ -550,7 +561,9 @@
     var h = head('Save and backup', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
     h += '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
       '<button type="button" class="btn big" data-act="import">Load backup file…</button>' +
-      '<div class="muted small">A backup file lets you keep a copy or move the game to another device. Loading one replaces the game you are playing now.</div>';
+      '<div class="muted small">A backup file lets you keep a copy or move the game to another device. Loading one replaces the game you are playing now.</div>' +
+      '<button type="button" class="btn big" data-act="menu">Back to start screen</button>' +
+      '<div class="muted small">Your game is saved first. Pick Continue to come back to it, or start a new game (a new game replaces the saved one).</div>';
     if (ui.snaps && ui.snaps.length) {
       h += '<div class="muted small"><b>Older autosaves</b> (every few minutes)</div>';
       ui.snaps.forEach(function (e) {
@@ -755,6 +768,7 @@
       case 'newline': ui.sheet = 'newline'; renderSheet(); break;
       case 'export': exportSave(); break;
       case 'import': $('importFile').click(); break;
+      case 'menu': save().then(function () { state = null; ui.sheet = 'none'; renderSheet(); $('start').className = 'overlay'; $('startMsg').textContent = ''; refreshContinue(); }); break;
       case 'snap': restoreSnapshot(t.getAttribute('data-slot')); break;
       case 'mode':
         res = S.startLine(state, t.getAttribute('data-mode'));
@@ -873,7 +887,7 @@
   }
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
-  var chunkBusy = false, chunkFailed = {}, chunkTimer = null;
+  var chunkBusy = false, chunkFailed = {}, chunkTimer = null, LOAD_ZOOM = 13;
   function worldParams() {
     return { wy0: centerPx.y, wsz: 256 * Math.pow(2, Z) };
   }
@@ -891,7 +905,7 @@
   }
 
   function ensureView() {
-    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm || map.getZoom() < 12) return;
+    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm || map.getZoom() < LOAD_ZOOM) return;
     if ($('start').className.indexOf('hidden') < 0) return;
     var bd = map.getBounds(), c = map.getCenter(), now = Date.now();
     var keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(function (k) {
@@ -996,6 +1010,16 @@
     });
   }
 
+  function refreshContinue() {
+    loadSave().then(function (saved) {
+      var btn = $('continueBtn');
+      if (saved && saved.state && saved.state.v === 1 && !saved.state.over) {
+        btn.className = 'btn big';
+        btn.onclick = function () { ui.dayProg = saved.dayProg || 0; beginGame(saved.state, saved.view); };
+      } else btn.className = 'btn big hidden';
+    });
+  }
+
   function startFromSearch() {
     var q = $('place').value.trim(), msg = $('startMsg');
     if (!q) { msg.textContent = 'Type a city or place first.'; return; }
@@ -1060,6 +1084,7 @@
       doubleClickZoom: false, boxZoom: false, minZoom: 3, maxZoom: 18, attributionControl: true
     }).setView([53.3498, -6.2603], 14);
     map.attributionControl.setPrefix(false);
+    L.control.scale({ metric: true, imperial: false, position: 'bottomleft', maxWidth: 110 }).addTo(map);
     setTiles();
     centerPx = map.project(map.getCenter(), Z);
 
@@ -1083,7 +1108,7 @@
       if (a === 'move') { ui.tool = 'move'; if (ui.editing) finishEditing(); ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); }
       else if (a === 'station') setTool('station');
       else if (a === 'lines') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'lines' ? 'none' : 'lines'; ui.selStation = null; renderSheet(); renderDock(); }
-      else if (a === 'demand') { ui.showDemand = !ui.showDemand; renderDock(); }
+      else if (a === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; renderDock(); }
       else if (a === 'stats') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'stats' ? 'none' : 'stats'; ui.selLine = null; ui.selStation = null; ui.renaming = false; renderSheet(); renderDock(); }
       else if (a === 'save') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'save' ? 'none' : 'save'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); if (ui.sheet === 'save') loadSnapshotList().then(function () { if (ui.sheet === 'save') renderSheet(); }); }
     });
@@ -1108,6 +1133,7 @@
     }
     $('tileKey').addEventListener('change', applyKey);
     $('tileKey').addEventListener('input', function () { clearTimeout(keyTimer); keyTimer = setTimeout(applyKey, 700); });
+    $('legendClose').addEventListener('click', function () { ui.legendHidden = true; updateLegend(); });
     $('startBtn').addEventListener('click', startFromSearch);
     $('importBtn').addEventListener('click', function () { $('importFile').click(); });
     $('importFile').addEventListener('change', function () { importSave(this.files[0]); this.value = ''; });
@@ -1115,12 +1141,7 @@
     $('place').addEventListener('keydown', function (e) { if (e.key === 'Enter') startFromSearch(); });
     $('againBtn').addEventListener('click', function () { $('over').className = 'overlay hidden'; $('start').className = 'overlay'; state = null; });
     Store.persist();
-    loadSave().then(function (saved) {
-      if (saved && saved.state && saved.state.v === 1 && !saved.state.over) {
-        $('continueBtn').className = 'btn big';
-        $('continueBtn').addEventListener('click', function () { ui.dayProg = saved.dayProg || 0; beginGame(saved.state, saved.view); });
-      }
-    });
+    refreshContinue();
     renderDock();
     requestAnimationFrame(frame);
     try {

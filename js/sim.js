@@ -4,8 +4,8 @@
   'use strict';
 
   var MODES = {
-    bus:   { name: 'Bus',   speed: 20, cap: 80,  trackKm: 80000,   platform: 8000,   vehicle: 120000,  vehicleDay: 250,  maintKmDay: 15,  minSpacingM: 150,  dwellMin: 0.6, catchM: 550, unlockPax: 0 },
-    tram:  { name: 'Tram',  speed: 30, cap: 200, trackKm: 600000,  platform: 60000,  vehicle: 700000,  vehicleDay: 600,  maintKmDay: 120, minSpacingM: 300,  dwellMin: 0.8, catchM: 700, unlockPax: 15000 },
+    bus:   { name: 'Bus',   speed: 20, cap: 80,  trackKm: 80000,   platform: 8000,   vehicle: 120000,  vehicleDay: 250,  maintKmDay: 15,  minSpacingM: 40,   dwellMin: 0.6, catchM: 550, unlockPax: 0 },
+    tram:  { name: 'Tram',  speed: 30, cap: 200, trackKm: 600000,  platform: 60000,  vehicle: 700000,  vehicleDay: 600,  maintKmDay: 120, minSpacingM: 100,  dwellMin: 0.8, catchM: 700, unlockPax: 15000 },
     rail:  { name: 'Rail',  speed: 80, cap: 600, trackKm: 1500000, platform: 250000, vehicle: 1800000, vehicleDay: 1400, maintKmDay: 300, minSpacingM: 1200, dwellMin: 1.5, catchM: 1100, unlockPax: 100000 },
     metro: { name: 'Metro', speed: 55, cap: 800, trackKm: 3500000, platform: 500000, vehicle: 2500000, vehicleDay: 1800, maintKmDay: 500, minSpacingM: 600,  dwellMin: 1.0, catchM: 900, unlockPax: 300000 }
   };
@@ -25,7 +25,7 @@
     operHours: 18,
     transferMin: 5,
     waitMin: 4,
-    minStationGapPx: 24,
+    minStationGapM: 40,
     maxVehicles: 24,
     bankruptDays: 3,
     maxBlocks: 1500
@@ -384,7 +384,7 @@
 
   function addStation(state, x, y) {
     for (var i = 0; i < state.stations.length; i++) {
-      if (Math.hypot(state.stations[i].x - x, state.stations[i].y - y) < BAL.minStationGapPx) return { ok: false, msg: 'Too close to another station' };
+      if (Math.hypot(state.stations[i].x - x, state.stations[i].y - y) * mScale(state, y) < BAL.minStationGapM) return { ok: false, msg: 'Too close to another station' };
     }
     if (state.balance < BAL.stationCost) return { ok: false, msg: 'Not enough money' };
     state.balance -= BAL.stationCost;

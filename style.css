@@ -95,7 +95,7 @@ p.muted { margin: 0; line-height: 1.45; }
 }
 @media (max-width: 440px) { .dock { gap: 6px; } .dockbtn { width: 62px; } }
 body.dimtiles .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.62) contrast(0.95) saturate(0.45); }
-.loadtag { position: absolute; z-index: 11; left: 12px; bottom: calc(var(--safe-b) + 100px); padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; pointer-events: none; }
+.loadtag { position: absolute; z-index: 11; left: 12px; bottom: calc(var(--safe-b) + 140px); padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; pointer-events: none; }
 .loadtag.hidden { display: none; }
 .renamerow { display: flex; gap: 8px; }
 .renamerow input { flex: 1; min-width: 0; }
@@ -104,3 +104,15 @@ body.dimtiles .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightne
 @media (max-width: 440px) { .dock { gap: 5px; } .dockbtn { font-size: 11px; } }
 .renamerow input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid #6B7076; background: #1b1d1f; color: var(--text); font-size: 16px; font-family: inherit; }
 .stats b > .pos, .stats b > .neg { font-size: inherit; } .stats b > .pos { color: var(--pos); } .stats b > .neg { color: var(--neg); }
+.leaflet-bottom.leaflet-left { bottom: calc(var(--safe-b) + 100px); pointer-events: none; }
+.leaflet-control-scale-line { background: rgba(20,22,24,0.75) !important; color: #E9E9E9 !important; border-color: #E9E9E9 !important; font-size: 12px; }
+.legend { position: absolute; z-index: 11; right: 12px; bottom: calc(var(--safe-b) + 100px); width: 220px; padding: 10px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.legend.hidden { display: none; }
+.legend .lg { display: flex; align-items: center; gap: 8px; }
+.legend .muted { color: var(--muted); display: block; }
+.lgdot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.lgbox { width: 14px; height: 14px; flex: none; border-radius: 2px; }
+.lgbox.dash { border: 1px dashed rgba(255,255,255,0.6); }
+.lgbox.dark { background: rgba(0,0,0,0.7); border: 1px solid #555; }
+.legendx { position: absolute; top: 2px; right: 6px; appearance: none; border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px; cursor: pointer; }
+@media (max-width: 440px) { .legend { width: 190px; right: 8px; bottom: calc(var(--safe-b) + 96px); } }
