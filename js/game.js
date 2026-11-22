@@ -1091,6 +1091,9 @@
     var act = t.getAttribute('data-act'), id = +t.getAttribute('data-id');
     var res;
     switch (act) {
+      case 'speed': bulk.speed = Math.max(1, Math.min(3, id)); try { window.localStorage.setItem('transit-game-loadspeed', String(bulk.speed)); } catch (e2) { /* ignore */ } renderSheet(); setTimeout(ensureView, 50); break;
+      case 'skiparea': skipLoading(); break;
+      case 'unskip': skippedKeys = {}; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'loadfirst': bulk.first = bulk.first === id ? null : id; bulk.on = true; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'bulkload': bulk.on = !bulk.on; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
       case 'set': {
@@ -1240,13 +1243,21 @@
 
   var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
   var lastLoadError = '';
+  var nextServer = 0;   // each request starts on the next server, so several at once spread out
+  var skipHooks = [], skipping = false, skippedKeys = {};   // "Skip this area" cancels the running load and puts the area on a skip list
+  function skipLoading() { skipping = true; skipHooks.slice().forEach(function (h) { h(); }); setTimeout(function () { skipping = false; }, 150); }
 
   /* Asks the servers, not all at once: the next one joins in if the first is slow (hedged request).
    * The first good answer wins and the others are cancelled. An answer that says the query timed out is treated as a failure. */
   function fetchOverpass(query, timeoutMs) {
     timeoutMs = timeoutMs || 60000;
-    return new Promise(function (resolve, reject) {
+    var hook = null, startAt = nextServer++;
+    function drop() { var i = skipHooks.indexOf(hook); if (i >= 0) skipHooks.splice(i, 1); }
+    var prom = new Promise(function (resolve, reject) {
       var ctls = [], timers = [], finished = false, failed = 0, started = 0, reason = '';
+      hook = function () { if (finished) return; finished = true; stopAll(); reject(new Error('skipped')); };
+      skipHooks.push(hook);
+      if (skipping) { hook(); return; }
       function stopAll(except) {
         timers.forEach(clearTimeout);
         ctls.forEach(function (c) { if (c !== except) { try { c.abort(); } catch (e) { /* ignore */ } } });
@@ -1263,7 +1274,7 @@
         if (ctl) ctls.push(ctl);
         var t = setTimeout(function () { if (ctl) try { ctl.abort(); } catch (e) { /* ignore */ } }, timeoutMs);
         timers.push(t);
-        fetch(OVERPASS[i], {
+        fetch(OVERPASS[(startAt + i) % OVERPASS.length], {
           method: 'POST', body: 'data=' + encodeURIComponent(query),
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl ? ctl.signal : undefined
         }).then(function (r) {
@@ -1281,6 +1292,8 @@
       }
       launch();
     });
+    prom.then(drop, drop);
+    return prom;
   }
 
   /* One chunk of the world. If the whole square is too heavy (a dense city), it is cut into four smaller squares, and again if needed.
@@ -1293,6 +1306,7 @@
   }
   function fetchBox(b, depth, startSplit) {
     var id = boxId(b);
+    if (skipping) return Promise.reject(new Error('skipped'));
     if (pieceCache.has(id)) return Promise.resolve(pieceCache.get(id));
     startSplit = startSplit || !!denseBoxes[id];
     function pieces() {
@@ -1304,7 +1318,7 @@
     }
     var run = startSplit && depth < 2 ? pieces() :
       fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000).then(function (json) { return json.elements || []; })
-        .catch(function (e) { lastLoadError = e && e.message || ''; denseBoxes[id] = true; if (depth >= 2) throw e; return pieces(); });
+        .catch(function (e) { if (e && e.message === 'skipped') throw e; lastLoadError = e && e.message || ''; denseBoxes[id] = true; if (depth >= 2) throw e; return pieces(); });
     return run.then(function (els) { if (depth) pieceCache.set(id, els); return els; });
   }
   function fetchChunkElements(key) {
@@ -1321,7 +1335,9 @@
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
   var chunkBusy = false, chunkFailed = {}, chunkTimer = null, LOAD_ZOOM = 13;
-  var bulk = { on: false, left: 0, first: null }, loadingKey = null;   // first = id of the stop whose area is loaded first
+  var bulk = { on: false, left: 0, first: null, speed: 2 }, inFlight = {};
+  function nBusy() { return Object.keys(inFlight).length; }
+  try { var sp0 = +window.localStorage.getItem('transit-game-loadspeed'); if (sp0 >= 1 && sp0 <= 3) bulk.speed = sp0; } catch (e) { /* ignore */ }   // first = id of the stop whose area is loaded first
 
   /* Which map areas (chunks) the network needs: everything within reach of a stop on a working line. */
   function needInfo() {
@@ -1356,11 +1372,16 @@
     var h = '<div class="muted small"><b>Map data</b> (homes and jobs)</div><div class="card mapdata">' +
       '<span class="lrow"><b>Around your stops</b><span class="grow"></span><span class="muted">' + loaded + ' of ' + ni.total + ' areas · ' + pct + '%</span></span>' +
       '<span class="bar"><i style="width:' + pct + '%"></i></span>';
-    if (chunkBusy && loadingKey) h += '<span class="muted">Loading now: the area near ' + esc(nearestStationName(loadingKey)) + '</span>';
+    if (nBusy()) {
+      Object.keys(inFlight).forEach(function (k) { h += '<span class="muted">Loading now: the area near ' + esc(nearestStationName(k)) + '</span>'; });
+      h += '<button type="button" class="btn" data-act="skiparea">' + (nBusy() > 1 ? 'Skip these areas' : 'Skip this area') + '</button>';
+    }
     else if (ni.missing.length && bulk.on) h += '<span class="muted">Waiting for the next area…</span>';
     else if (!ni.missing.length) h += '<span class="muted">Everything your stops can reach is loaded.</span>';
     else h += '<span class="muted">' + ni.missing.length + ' areas around your stops are not loaded yet. They load when you look at them, or all at once below.</span>';
     if (bulk.on && ni.missing.length) h += '<span class="muted small">While this runs, moving around the map does not load anything extra.</span>';
+    var nSkipped = ni.missing.filter(function (k) { return skippedKeys[k]; }).length;
+    if (nSkipped) h += '<span class="muted small">' + nSkipped + ' area' + (nSkipped > 1 ? 's' : '') + ' skipped.</span><button type="button" class="btn" data-act="unskip">Try the skipped areas again</button>';
     if (failed) h += '<span class="neg small">' + failed + ' area' + (failed > 1 ? 's' : '') + ' failed and will be tried again soon.</span>';
     if (ni.per.length) {
       h += '<span class="muted small"><b>Missing data near</b></span>';
@@ -1371,6 +1392,8 @@
       });
       if (ni.per.length > 6) h += '<span class="muted small">and ' + (ni.per.length - 6) + ' more stops</span>';
     }
+    h += '<span class="muted small"><b>Loading speed</b> (how many areas at once)</span><span class="lrow speedrow">' +
+      [[1, 'Careful'], [2, 'Normal'], [3, 'Fast']].map(function (o) { return '<button type="button" class="btn' + (bulk.speed === o[0] ? ' primary' : '') + '" data-act="speed" data-id="' + o[0] + '">' + o[1] + ' (' + o[0] + ')</button>'; }).join('') + '</span>';
     if (ni.missing.length) h += '<button type="button" class="btn big ' + (bulk.on ? '' : 'primary') + '" data-act="bulkload">' + (bulk.on ? 'Stop loading' : 'Load data around my stops') + '</button>';
     return h + '</div>';
   }
@@ -1394,7 +1417,7 @@
     if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm) return;
     if ($('start').className.indexOf('hidden') < 0) return;
     var c = map.getCenter(), now = Date.now(), keys = [];
-    function fresh(k) { return !(state.chunks && state.chunks[k]) && !(chunkFailed[k] && now - chunkFailed[k] < 90000); }
+    function fresh(k) { return !(state.chunks && state.chunks[k]) && !inFlight[k] && !skippedKeys[k] && !(chunkFailed[k] && now - chunkFailed[k] < 90000); }
     if (map.getZoom() >= LOAD_ZOOM && !bulk.on) {   // while the queue runs, looking around the map loads nothing; it resumes when the queue is done or stopped
       var bd = map.getBounds();
       keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(fresh);
@@ -1406,18 +1429,20 @@
       if (bulk.first && !pri) bulk.first = null;                       // that stop is fully loaded
       if (pri) { keys = pri.keys.filter(fresh); if (keys.length) c = pri.ll; }
       if (!keys.length) keys = ni.missing.filter(fresh);
+      if (!keys.length && ni.missing.length && ni.missing.every(function (k) { return skippedKeys[k]; })) { bulk.on = false; toast('Queue finished. Some areas were skipped.', 3500); if (ui.sheet === 'save') renderSheet(); }
       if (!ni.missing.length) { bulk.on = false; toast('All the data around your stops is loaded', 3500); if (ui.sheet === 'save') renderSheet(); }
     }
-    if (!keys.length) return;
+    var room = (bulk.on ? bulk.speed : 1) - nBusy();
+    if (!keys.length || room <= 0) return;
     keys.sort(function (a, b) {
       function d(k) { var x = TGOsm.chunkBox(k); return Math.hypot((x.s + x.n) / 2 - c.lat, ((x.w + x.e) / 2 - c.lng) * Math.cos(c.lat * Math.PI / 180)); }
       return d(a) - d(b);
     });
-    loadChunks(keys.slice(0, 1), state);
+    keys.slice(0, room).forEach(function (k) { loadChunks([k], state); });
   }
 
   function loadChunks(keys, st) {
-    chunkBusy = true; loadingKey = keys[0];
+    inFlight[keys[0]] = true; skipping = false;
     setLoadTag(bulk.on && bulk.left ? 'Loading map data, ' + bulk.left + ' areas left…' : 'Loading homes and jobs…');
     if (ui.sheet === 'save') renderSheet();
     return fetchKeysElements(keys).then(function (els) {
@@ -1431,12 +1456,13 @@
         st.chunks[k] = 1;
       });
       if (added) { st.stats = S.computeNetwork(st); updateHud(); scheduleSave(); }
-    }).catch(function () {
+    }).catch(function (e) {
+      if (e && e.message === 'skipped') { keys.forEach(function (k) { skippedKeys[k] = true; }); toast('Skipped this area. You can load it later from the Menu.', 3500); return; }
       keys.forEach(function (k) { chunkFailed[k] = Date.now(); });
       toast('Could not load homes and jobs' + (lastLoadError ? ' (' + lastLoadError + ')' : '') + '. Will retry.', 4500);
       clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 95000);
     }).then(function () {
-      chunkBusy = false; loadingKey = null; setLoadTag('');
+      delete inFlight[keys[0]]; if (!nBusy()) setLoadTag('');
       if (ui.sheet === 'save') renderSheet();
       setTimeout(ensureView, 1500);
     });
