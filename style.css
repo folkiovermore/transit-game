@@ -94,3 +94,4 @@ p.muted { margin: 0; line-height: 1.45; }
   .toast { bottom: calc(var(--safe-b) + 110px); }
 }
 @media (max-width: 440px) { .dock { gap: 6px; } .dockbtn { width: 62px; } }
+body.dimtiles .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.62) contrast(0.95) saturate(0.45); }

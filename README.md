@@ -33,7 +33,7 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 
 ## How it works
 
-- **Map:** Leaflet with CARTO dark tiles. A canvas on top draws blocks, catchments, lines, vehicles and stations.
+- **Map:** Leaflet. CARTO now needs a free API key for its dark tiles. Paste a key into the start screen (stored in this browser only) and the game uses CARTO dark tiles. Without a key it uses plain OpenStreetMap tiles darkened with a CSS filter. Get a key at carto.com/basemaps/apikey (free, no account). A canvas on top draws blocks, catchments, lines, vehicles and stations.
 - **Routing (`js/routing.js`):** each segment is a straight leg plus at most one 45° leg. The bend direction is chosen from the previous heading. Parallel lines that share a corridor are bundled and offset. Pure functions.
 - **Simulation (`js/sim.js`):** a daily aggregate model, not per-vehicle. Demand between blocks follows a gravity model. Trips are routed with Dijkstra over the network, with transfer and wait penalties. Peak capacity limits how many passengers a line carries. Income is fares, costs are vehicles, track, stations and maintenance. All tuning numbers are at the top of the file in `MODES` and `BAL`.
 - **Real demand (`js/osm.js`):** one Overpass query for land use areas (residential, commercial, retail, industrial), offices, shops, schools, universities, hospitals and apartment buildings within 3.5 km. Areas are sampled to points, grouped into cells, then rescaled to the target totals. If the request fails, the game falls back to a generated city and shows a message.
@@ -77,4 +77,4 @@ Not verified: the live Overpass request. It was tested only with a fake response
 - Growth adds generated blocks near existing demand. It does not yet follow real city expansion.
 - Real data covers a 3.5 km radius around the chosen point. Larger cities are cut off at the edge.
 - Ideas: ferries and water crossings, line colours and renaming, per-line profit view, bigger map radius, a second city per save, sounds.
-- Map tiles are from CARTO (dark basemap), data © OpenStreetMap contributors.
+- Map tiles are from CARTO (dark basemap, needs a free key) or OpenStreetMap, data © OpenStreetMap contributors.
