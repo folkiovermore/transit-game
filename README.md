@@ -19,7 +19,7 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 - A scale bar sits bottom left. With Demand on, a legend explains the dots (orange homes, blue jobs, bigger means more) and the loaded and unloaded areas. Close it with the ×.
 - Keyboard: Space pauses, Esc cancels.
 - Stops can be close together: 40 m apart at minimum, and consecutive stops on a line at least 40 m (bus), 100 m (tram), 600 m (metro) or 1,200 m (rail).
-- Tram, rail and metro unlock as your network carries more passengers in total. Ferries are not built yet.
+- Light rail, commuter rail, metro and intercity rail unlock as your network carries more passengers in total. Ferry unlocks at 40,000.
 - You lose if your balance stays below zero for 3 days.
 
 ## Design decisions (settled)
@@ -80,9 +80,15 @@ Not verified: the live Overpass requests (start and panning). It was tested only
 
 ## Known limits and ideas for next
 
-- The game does not know about water, so lines can cross rivers for free. No ferries yet.
+- The game does not know about water, so lines can cross rivers for free. Ferries work but are not restricted to water.
 - Growth adds generated blocks near existing demand. It does not yet follow real city expansion.
-- Trips are local: demand falls off steeply with distance (about 4 km), so a very long line only earns from the places near its stops. Long-distance demand is not modelled yet.
+- Everyday trips are local (about 4 km falloff). A separate long-distance component covers trips of 25 km or more between stations.
 - Every loaded chunk adds up to a few hundred blocks to the save and to the daily calculation. Very large networks will get slower.
 - Ideas: ferries and water crossings, line colours and renaming, per-line profit view, bigger map radius, a second city per save, sounds.
 - Map tiles are from CARTO (dark basemap, needs a free key) or OpenStreetMap, data © OpenStreetMap contributors.
+
+
+## Transport modes (phase 1)
+- Bus, Tram, **Light rail** (unlock 50,000 total passengers), Commuter rail (100,000), Metro (300,000), **Intercity rail** (1,500,000, 160 km/h, stops at least 8 km apart).
+- **Ferry** (unlock 40,000, 25 km/h, cheap track) is playable, but the game does not know where water is: you place ferry stops on water or shore yourself, and any line can still cross water for free. A real water map (OSM water polygons, coastlines, bridges) enforcing this is a possible phase 2.
+- **Long-distance demand**: trips of 25 km or more between far-apart places appear once stations exist at both ends. Existing mode economics are unchanged.

@@ -201,7 +201,7 @@
         var pt = R.pointAlong(g.path, u * g.len);
         var ang = pt.ang + (ph < 0.5 ? 0 : Math.PI);
         var p = toScreen(pt);
-        var len = lw * (L.mode === 'bus' ? 1.7 : L.mode === 'tram' ? 2.2 : 2.8), wid = lw * 1.3;
+        var len = lw * (m.vlen || 2.8), wid = lw * 1.3;
         ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(ang);
         ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 2;
         roundRect(-len / 2, -wid / 2, len, wid, 3); ctx.fill(); ctx.stroke();
@@ -376,12 +376,20 @@
     }
     var res = S.addStopToLine(state, L.id, sid, pickEnd(L, hit ? hit : g));
     if (!res.ok) {
-      if (created) { state.stations.pop(); state.balance = before; }
+      if (created) {
+        state.stations.pop(); state.balance = before;
+        var m = /^Need (.+) for this stop$/.exec(res.msg || '');
+        if (m) {
+          var sm = S.stationMap(state), tmp = { id: -1, x: g.x, y: g.y };
+          var c = S.stopCost(state, L, tmp, sm, pickEnd(L, g)).cost + BAL.stationCost;
+          return toast('Need ' + fmt(c) + ' (stop plus new station), you have ' + fmt(before));
+        }
+      }
       return toast(res.msg);
     }
     ui.hint = false;
     if (created) queueName(sid);
-    toast('Stop added, ' + fmt(res.cost) + (res.note ? '. ' + res.note : ''));
+    toast('Stop added, ' + fmt(res.cost + (created ? BAL.stationCost : 0)) + (res.note ? '. ' + res.note : ''));
     afterChange();
   }
 
@@ -450,6 +458,10 @@
     var base = a.road || a.pedestrian || a.footway || a.cycleway || a.path || a.neighbourhood || a.suburb || a.quarter || a.village || a.town || a.city_district || a.hamlet;
     if (!base) { s.named = true; return; }
     var area = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
+    if (/^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(base).trim())) {            // a bare road number such as "811"
+      var place = a.suburb || a.village || a.hamlet || a.neighbourhood || a.town || a.city_district || a.city || '';
+      base = 'Road ' + String(base).trim() + (place ? ' (' + place + ')' : ''); area = '';
+    }
     var taken = function (n) { return st.stations.some(function (o) { return o !== s && o.name.toLowerCase() === n.toLowerCase(); }); };
     var name = base;
     if (taken(name) && area && area !== base) name = base + ' (' + area + ')';
@@ -699,9 +711,9 @@
     S.MODE_ORDER.forEach(function (k) {
       var m = MODES[k], open = S.isUnlocked(state, k);
       h += '<button type="button" class="card modecard' + (open ? '' : ' locked') + '" data-act="mode" data-mode="' + k + '"' + (open ? '' : ' disabled') + '>' +
-        '<span class="lrow"><b>' + m.name + '</b><span class="grow"></span><span class="muted">' + (open ? m.speed + ' km/h · ' + m.cap + ' seats' : 'Locked') + '</span></span>' +
+        '<span class="lrow"><b>' + m.name + '</b><span class="grow"></span><span class="muted">' + (open ? m.speed + ' km/h · ' + m.cap + ' seats' : m.soon ? 'Coming soon' : 'Locked') + '</span></span>' +
         '<span class="muted">' + (open ? 'Track ' + fmt(m.trackKm) + '/km · stop ' + fmt(m.platform) + ' · vehicle ' + fmt(m.vehicle) + ' · stops at least ' + m.minSpacingM + ' m apart'
-          : 'Unlocks at ' + num(m.unlockPax) + ' total passengers (' + num(state.lifetimePax) + ' so far)') + '</span></button>';
+          : m.soon ? m.soon : 'Unlocks at ' + num(m.unlockPax) + ' total passengers (' + num(state.lifetimePax) + ' so far)') + '</span></button>';
     });
     return h;
   }
@@ -863,6 +875,7 @@
     $('over').className = 'overlay hidden';
     relayout(); state.stats = S.computeNetwork(state);
     updateHud(); renderDock(); renderSheet(); renderBanner();
+    state.stations.forEach(function (x) { if (x.named && /^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(x.name).trim())) { x.named = false; x.name = 'Stop ' + x.id; } });
     nameQueue = []; queueUnnamed();
     upgradeOldSave(state);
     setTimeout(ensureView, 2500);

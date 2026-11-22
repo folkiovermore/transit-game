@@ -9,7 +9,12 @@
     rail:  { name: 'Rail',  speed: 80, cap: 600, trackKm: 1500000, platform: 250000, vehicle: 1800000, vehicleDay: 1400, maintKmDay: 300, minSpacingM: 1200, dwellMin: 1.5, catchM: 1100, unlockPax: 100000 },
     metro: { name: 'Metro', speed: 55, cap: 800, trackKm: 3500000, platform: 500000, vehicle: 2500000, vehicleDay: 1800, maintKmDay: 500, minSpacingM: 600,  dwellMin: 1.0, catchM: 900, unlockPax: 300000 }
   };
-  var MODE_ORDER = ['bus', 'tram', 'rail', 'metro'];
+  MODES.rail.name = 'Commuter rail';
+  MODES.lightrail = { name: 'Light rail', speed: 40, cap: 400, trackKm: 1100000, platform: 150000, vehicle: 1400000, vehicleDay: 800, maintKmDay: 180, minSpacingM: 450, dwellMin: 0.9, catchM: 800, unlockPax: 50000 };
+  MODES.intercity = { name: 'Intercity rail', speed: 160, cap: 700, trackKm: 1200000, platform: 800000, vehicle: 4000000, vehicleDay: 2500, maintKmDay: 100, minSpacingM: 8000, dwellMin: 4, catchM: 1500, unlockPax: 1500000 };
+  MODES.ferry = { name: 'Ferry', speed: 25, cap: 300, trackKm: 150000, platform: 300000, vehicle: 1500000, vehicleDay: 700, maintKmDay: 20, minSpacingM: 500, dwellMin: 3, catchM: 700, unlockPax: 40000 };
+  MODES.bus.vlen = 1.7; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
+  var MODE_ORDER = ['bus', 'tram', 'lightrail', 'rail', 'metro', 'intercity', 'ferry'];
 
   var BAL = {
     startBalance: 3000000,
@@ -28,7 +33,11 @@
     minStationGapM: 40,
     maxVehicles: 24,
     bankruptDays: 3,
-    maxBlocks: 1500
+    maxBlocks: 1500,
+    longRate: 0.04,            // share of residents who make a long-distance trip each day
+    longGravityM: 120000,      // how quickly long-distance demand falls off with distance
+    longMinM: 25000,           // trips shorter than this are covered by the local model
+    longCellM: 8000
   };
 
   var COLORS = ['#FFCB0D', '#E8472B', '#2A64B0', '#3DAA5B', '#F28A1E', '#9B5DE5', '#00BBF9', '#F15BB5'];
@@ -225,6 +234,40 @@
       }
     });
 
+    // long-distance trips between far-apart places (only between stations that are on the network)
+    (function () {
+      var popAt = new Map(), attrAt = new Map(), cells = new Map(), cellPx = BAL.longCellM / state.mpp;
+      state.blocks.forEach(function (b, i) {
+        var a = b.jobs + 0.3 * b.pop;
+        var key = Math.floor(b.x / cellPx) + ',' + Math.floor(b.y / cellPx), c = cells.get(key);
+        if (!c) { c = { x: 0, y: 0, w: 0 }; cells.set(key, c); }
+        c.x += b.x * a; c.y += b.y * a; c.w += a;
+        var st = homeSt[i];
+        if (st !== null) { popAt.set(st, (popAt.get(st) || 0) + b.pop); attrAt.set(st, (attrAt.get(st) || 0) + a); }
+      });
+      if (popAt.size < 1 || attrAt.size < 2) return;
+      var far = [];
+      cells.forEach(function (c) { if (c.w > 0) far.push({ x: c.x / c.w, y: c.y / c.w, w: c.w }); });
+      function distM(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by) * mScale(state, (ay + by) / 2); }
+      popAt.forEach(function (pop, so) {
+        var a = sMap.get(so); if (!a) return;
+        var Z = 0;
+        far.forEach(function (c) { var d = distM(a.x, a.y, c.x, c.y); if (d >= BAL.longMinM) Z += c.w * Math.exp(-d / BAL.longGravityM); });
+        if (Z <= 0) return;
+        var trips = pop * BAL.longRate;
+        attrAt.forEach(function (attr, sd) {
+          if (sd === so) return;
+          var b2 = sMap.get(sd); if (!b2) return;
+          var d = distM(a.x, a.y, b2.x, b2.y);
+          if (d < BAL.longMinM) return;
+          var t = trips * attr * Math.exp(-d / BAL.longGravityM) / Z;
+          if (t <= 0) return;
+          var key = so + '|' + sd;
+          od.set(key, (od.get(key) || 0) + t);
+        });
+      });
+    })();
+
     // shortest paths from each origin station
     var originCache = new Map();
     function dijkstra(so) {
@@ -361,7 +404,7 @@
     grow(state);
     state.stats = computeNetwork(state);
     MODE_ORDER.forEach(function (k) {
-      if (!isUnlocked(state, k) && state.lifetimePax >= MODES[k].unlockPax) {
+      if (!MODES[k].soon && !isUnlocked(state, k) && state.lifetimePax >= MODES[k].unlockPax) {
         state.unlocked = state.unlocked || {};
         state.unlocked[k] = true;
         events.push({ type: 'unlock', mode: k });
@@ -371,6 +414,7 @@
   }
 
   function isUnlocked(state, mode) {
+    if (MODES[mode].soon) return false;
     return MODES[mode].unlockPax === 0 || !!(state.unlocked && state.unlocked[mode]);
   }
 
@@ -410,7 +454,7 @@
   }
 
   function startLine(state, mode) {
-    if (!isUnlocked(state, mode)) return { ok: false, msg: MODES[mode].name + ' is still locked' };
+    if (!isUnlocked(state, mode)) return { ok: false, msg: MODES[mode].soon || (MODES[mode].name + ' is still locked') };
     var used = state.lines.map(function (L) { return L.color; });
     var color = COLORS.find(function (c) { return used.indexOf(c) < 0; });
     for (var hi = 0; !color; hi++) {
