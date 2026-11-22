@@ -39,7 +39,11 @@
     longRate: 0.04,            // share of residents who make a long-distance trip each day
     longGravityM: 120000,      // how quickly long-distance demand falls off with distance
     longMinM: 25000,           // trips shorter than this are covered by the local model
-    longCellM: 8000
+    longCellM: 8000,
+    airRate: 0.004,            // share of residents who take a flight each day (only counts places served by a plane line)
+    airGravityM: 1500000,      // flights fall off with distance much more slowly than ground trips
+    airMinM: 300000,           // closer than this, flying is not worth it
+    airMetroM: 60000           // how far around an airport counts as the place you are flying to
   };
 
   var COLORS = ['#FFCB0D', '#E8472B', '#2A64B0', '#3DAA5B', '#F28A1E', '#9B5DE5', '#00BBF9', '#F15BB5'];
@@ -279,6 +283,50 @@
           var d = distM(a.x, a.y, b2.x, b2.y);
           if (d < BAL.longMinM) return;
           var t = trips * attr * Math.exp(-d / BAL.longGravityM) / Z;
+          if (t <= 0) return;
+          var key = so + '|' + sd;
+          od.set(key, (od.get(key) || 0) + t);
+        });
+      });
+    })();
+
+    // air travel: flights between airports, with their own (much longer) distance scale so a 1,500 km flight still has demand
+    (function () {
+      var airSt = new Set();
+      lines.forEach(function (L) { if (MODES[L.mode].straight) L.stations.forEach(function (sid) { airSt.add(sid); }); });
+      if (airSt.size < 2) return;
+      var popAt = new Map(), attrAt = new Map(), cells = new Map(), cellPx = BAL.longCellM * 4 / state.mpp;
+      state.blocks.forEach(function (b, i) {
+        var a = b.jobs + 0.3 * b.pop;
+        var key = Math.floor(b.x / cellPx) + ',' + Math.floor(b.y / cellPx), c = cells.get(key);
+        if (!c) { c = { x: 0, y: 0, w: 0 }; cells.set(key, c); }
+        c.x += b.x * a; c.y += b.y * a; c.w += a;
+        var st = homeSt[i];
+        if (st !== null) popAt.set(st, (popAt.get(st) || 0) + b.pop);
+      });
+      var far = [];
+      cells.forEach(function (c) { if (c.w > 0) far.push({ x: c.x / c.w, y: c.y / c.w, w: c.w }); });
+      function distM(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by) * mScale(state, (ay + by) / 2); }
+      // an airport draws visitors to its whole metro area, not just the streets right around it
+      airSt.forEach(function (sid) {
+        var a = sMap.get(sid); if (!a) return;
+        var w = 0;
+        far.forEach(function (c) { if (distM(a.x, a.y, c.x, c.y) <= BAL.airMetroM) w += c.w; });
+        if (w > 0) attrAt.set(sid, w);
+      });
+      if (attrAt.size < 2) return;
+      popAt.forEach(function (pop, so) {
+        var a = sMap.get(so); if (!a) return;
+        var Z = 0;
+        far.forEach(function (c) { var d = distM(a.x, a.y, c.x, c.y); if (d >= BAL.airMinM) Z += c.w * Math.exp(-d / BAL.airGravityM); });
+        if (Z <= 0) return;
+        var trips = pop * BAL.airRate * fx.demand;
+        attrAt.forEach(function (attr, sd) {
+          if (sd === so) return;
+          var b2 = sMap.get(sd); if (!b2) return;
+          var d = distM(a.x, a.y, b2.x, b2.y);
+          if (d < BAL.airMinM) return;
+          var t = trips * attr * Math.exp(-d / BAL.airGravityM) / Z;
           if (t <= 0) return;
           var key = so + '|' + sd;
           od.set(key, (od.get(key) || 0) + t);
