@@ -113,11 +113,11 @@
     }
   }
 
-  function reachList(state, sMap) {
+  function reachList(state, sMap, onlyLine) {
     sMap = sMap || stationMap(state);
     var best = new Map();
     state.lines.forEach(function (L) {
-      if (L.stations.length < 2) return;
+      if (L.stations.length < 2 || (onlyLine !== undefined && L.id !== onlyLine)) return;
       var cm = MODES[L.mode].catchM;
       L.stations.forEach(function (id) { if (!best.has(id) || best.get(id) < cm) best.set(id, cm); });
     });
@@ -135,8 +135,8 @@
   }
 
   /* How much of the population and the jobs lie within walking distance of a stop on a working line. */
-  function coverage(state) {
-    var reach = reachList(state), c = { pop: 0, popReached: 0, jobs: 0, jobsReached: 0 };
+  function coverage(state, onlyLine) {
+    var reach = reachList(state, null, onlyLine), c = { pop: 0, popReached: 0, jobs: 0, jobsReached: 0 };
     state.blocks.forEach(function (b) {
       c.pop += b.pop; c.jobs += b.jobs;
       if (nearestReach(b, reach) !== null) { c.popReached += b.pop; c.jobsReached += b.jobs; }

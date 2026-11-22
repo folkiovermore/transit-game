@@ -81,13 +81,41 @@
 
   function drawBlocks() {
     if (!ui.showDemand) return;
+    drawChunks();
     state.blocks.forEach(function (b) {
       var p = toScreen(b);
-      if (p.x < -60 || p.y < -60 || p.x > V.w + 60 || p.y > V.h + 60) return;
-      var rp = Math.sqrt(b.pop) * 1.1 * V.s, rj = Math.sqrt(b.jobs) * 1.1 * V.s;
-      if (rp > 1) { ctx.fillStyle = 'rgba(255,180,84,0.13)'; ctx.beginPath(); ctx.arc(p.x, p.y, rp, 0, 6.283); ctx.fill(); }
-      if (rj > 1) { ctx.fillStyle = 'rgba(108,168,255,0.16)'; ctx.beginPath(); ctx.arc(p.x, p.y, rj, 0, 6.283); ctx.fill(); }
+      if (p.x < -90 || p.y < -90 || p.x > V.w + 90 || p.y > V.h + 90) return;
+      var rp = Math.sqrt(b.pop) * 1.7 * V.s, rj = Math.sqrt(b.jobs) * 1.7 * V.s;
+      if (rp > 1) { ctx.fillStyle = 'rgba(255,170,60,0.30)'; ctx.beginPath(); ctx.arc(p.x, p.y, rp, 0, 6.283); ctx.fill(); }
+      if (rj > 1) { ctx.fillStyle = 'rgba(90,160,255,0.34)'; ctx.beginPath(); ctx.arc(p.x, p.y, rj, 0, 6.283); ctx.fill(); }
     });
+  }
+
+  /* Shows which parts of the map have real homes and jobs loaded. */
+  function drawChunks() {
+    if (state.source !== 'osm' || !state.wsz || !window.TGOsm || !centerPx) return;
+    var tl = map.unproject(L.point(centerPx.x + V.cx - V.w / 2 / V.s, centerPx.y + V.cy - V.h / 2 / V.s), Z);
+    var br = map.unproject(L.point(centerPx.x + V.cx + V.w / 2 / V.s, centerPx.y + V.cy + V.h / 2 / V.s), Z);
+    var keys = TGOsm.chunksIn({ s: br.lat, n: tl.lat, w: tl.lng, e: br.lng });
+    if (keys.length > 40) return;
+    ctx.save();
+    ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    keys.forEach(function (k) {
+      var bd = chunkPxBounds(k), a = toScreen({ x: bd.x0, y: bd.y0 }), c = toScreen({ x: bd.x1, y: bd.y1 });
+      var loaded = state.chunks && state.chunks[k];
+      if (loaded) {
+        ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1;
+        ctx.strokeRect(a.x, a.y, c.x - a.x, c.y - a.y);
+      } else {
+        ctx.fillStyle = 'rgba(0,0,0,0.38)'; ctx.fillRect(a.x, a.y, c.x - a.x, c.y - a.y);
+        var x0 = Math.max(a.x, 0), x1 = Math.min(c.x, V.w), y0 = Math.max(a.y, 0), y1 = Math.min(c.y, V.h);
+        if (x1 - x0 > 120 && y1 - y0 > 40) {
+          var msg = map.getZoom() < 12 ? 'Zoom in to load homes and jobs' : chunkFailed[k] && Date.now() - chunkFailed[k] < 90000 ? 'Could not load, retrying soon' : 'Loading homes and jobs…';
+          ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillText(msg, (x0 + x1) / 2, (y0 + y1) / 2);
+        }
+      }
+    });
+    ctx.restore();
   }
 
   function catchRadiusFor(sid) {
@@ -669,7 +697,7 @@
     var L = S.lineById(state, ui.selLine);
     if (!L) return '';
     var m = MODES[L.mode], ls = (state.stats && state.stats.lines[L.id]) || { riders: 0, load: 0, profit: 0, cost: 0 };
-    var km = S.lineLenM(state, L) / 1000;
+    var km = S.lineLenM(state, L) / 1000, lc = S.coverage(state, L.id);
     var h = head('<span class="dot" style="background:' + L.color + '"></span> ' + lineName(L), m.name + ' · ' + L.stations.length + ' stops · ' + km.toFixed(1) + ' km', 'lines');
     if (ui.renaming) {
       h += '<div class="renamerow"><input id="lineNameInput" type="text" maxlength="24" placeholder="Line name" value="' + esc(L.name || '') + '" autocomplete="off"><button type="button" class="btn primary" data-act="saverename">Save</button><button type="button" class="btn" data-act="cancelrename">Cancel</button></div>';
@@ -678,7 +706,9 @@
       '<div><b>' + num(ls.riders) + '</b><span>riders / day</span></div>' +
       '<div><b>' + Math.round(ls.load * 100) + '%</b><span>full at peak</span></div>' +
       '<div><b>' + profitHtml(ls.profit) + '</b><span>profit / day</span></div>' +
-      '<div><b>' + fmt(ls.cost) + '</b><span>running cost / day</span></div></div>';
+      '<div><b>' + fmt(ls.cost) + '</b><span>running cost / day</span></div>' +
+      '<div><b>' + num(lc.popReached) + '</b><span>residents near stops</span></div>' +
+      '<div><b>' + num(lc.jobsReached) + '</b><span>jobs near stops</span></div></div>';
     h += '<div class="stepper"><span><b>Vehicles</b> <span class="muted">(' + fmt(m.vehicle) + ' each)</span></span><span class="grow"></span>' +
       '<button type="button" class="round" data-act="vminus" aria-label="Sell a vehicle">−</button><b class="vnum">' + L.vehicles + '</b>' +
       '<button type="button" class="round primary" data-act="vplus" aria-label="Buy a vehicle">+</button></div>';
@@ -820,6 +850,8 @@
     relayout(); state.stats = S.computeNetwork(state);
     updateHud(); renderDock(); renderSheet(); renderBanner();
     nameQueue = []; queueUnnamed();
+    upgradeOldSave(state);
+    setTimeout(ensureView, 2500);
     if (state.over) showOver();
   }
 
@@ -859,7 +891,7 @@
   }
 
   function ensureView() {
-    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !window.TGOsm || map.getZoom() < 12) return;
+    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm || map.getZoom() < 12) return;
     if ($('start').className.indexOf('hidden') < 0) return;
     var bd = map.getBounds(), c = map.getCenter(), now = Date.now();
     var keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(function (k) {
@@ -895,6 +927,35 @@
       chunkBusy = false; setLoadTag('');
       setTimeout(ensureView, 1500);
     });
+  }
+
+  /* Games saved before the world map existed only have homes and jobs within 3.5 km of the start.
+   * Give them true distances and load the wider area around the start, leaving their existing blocks alone. */
+  function upgradeOldSave(st) {
+    if (!st.wsz) { st.wy0 = centerPx.y; st.wsz = 256 * Math.pow(2, Z); st.cos0 = Math.cos(st.center.lat * Math.PI / 180); }
+    if (!st.chunks) st.chunks = {};
+    if (st.source !== 'osm' || st.popScale || !window.TGOsm) return;
+    st.legacyR = TGOsm.CFG.startRadiusM / st.mpp;
+    chunkBusy = true; setLoadTag('Loading homes and jobs…');
+    var keys = TGOsm.chunksIn(TGOsm.bboxFor(st.center.lat, st.center.lng, TGOsm.CFG.startRadiusM));
+    fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
+      if (st !== state) return;
+      var els = json.elements || [];
+      var cal = TGOsm.calibrate(els, projFn, st.mpp, TGOsm.CFG.startRadiusM);
+      st.popScale = cal ? cal.popScale : TGOsm.CFG.defaultScale;
+      st.jobScale = cal ? cal.jobScale : TGOsm.CFG.defaultScale;
+      keys.forEach(function (k) {
+        var bnd = chunkPxBounds(k);
+        TGOsm.buildChunkBlocks(els, projFn, mppAt(bnd.midLat), bnd, { popScale: st.popScale, jobScale: st.jobScale }).forEach(function (b) {
+          if (Math.hypot(b.x, b.y) >= st.legacyR) st.blocks.push(b);
+        });
+        st.chunks[k] = 1;
+      });
+      st.stats = S.computeNetwork(st); updateHud(); scheduleSave();
+      toast('Loaded homes and jobs for the wider area.');
+    }).catch(function () {
+      toast('Could not load the wider area yet. Will retry next time you open the game.', 5000);
+    }).then(function () { chunkBusy = false; setLoadTag(''); setTimeout(ensureView, 1500); });
   }
 
   function newGameAt(lat, lng) {
