@@ -14,6 +14,7 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 - **Done** finishes the line. Two vehicles are bought for you. Add more in the line panel.
 - Tap a segment of the selected line to flip its bend.
 - **Station** tool places stand-alone stations. **Demand** shows homes (orange) and jobs (blue).
+- **Lines list:** search by name, sort (oldest, newest, name, profit, riders, most crowded, stops, length, vehicles), filter by mode, by country (taken from the stop names, so stops not named yet show as "Country not known yet") and by status (crowded, overloaded, losing money, nearly empty, hit by an event, unfinished). Sort and filters are remembered in this browser, search is not.
 - **Rename** a line from its panel. **Stats** (bottom bar) shows balance, riders, profit, how much of the population and jobs lie near a stop, history charts, lines ranked by profit and the stops where most people are left behind.
 - **Save** (bottom bar) downloads a backup file or loads one. The start screen can also load a backup.
 - A scale bar sits bottom left. With Demand on, a legend explains the dots (orange homes, blue jobs, bigger means more) and the loaded and unloaded areas. Close it with the ×.
@@ -101,6 +102,8 @@ Not verified: the live Overpass requests (start and panning). It was tested only
   - *Numbers*: total passengers, riders per day, profit per day, savings.
   - *Contracts* (time limited, no penalty if missed): put a stop within 400 m of a marked busy area (gold ring on the map, "Show on map" button), or reach a rider target within 15 days.
   - *Challenges*: a bus-only profit target, riders with no line over 95% full, one star line with a profit target.
+  - Missed contracts are listed under "Recently missed" in the Goals sheet (last 5 shown, 25 kept).
+  - Every goal has a **Skip** button (free). A different goal takes its place and the skipped type does not return straight away. The no-crowding challenge is not offered while a line is already full at the vehicle cap, and tells you to build a parallel line if that happens later.
   - Targets scale with the current network and rewards scale with daily profit.
 - **Seasons**: a game year is 120 days. Summer +6% riders, winter -8%.
 - **Events** (about one every 10 days, at most two at once, never two of the same type at once, only once you have a working line). 25 types:

@@ -590,7 +590,8 @@
 
   /* ---------- sheet ---------- */
   function colorName(L) { return COLOR_NAMES[L.color] || ('Line ' + (L.n || L.id)); }
-  function lineName(L) { return esc(L.name || (COLOR_NAMES[L.color] ? COLOR_NAMES[L.color] + ' line' : 'Line ' + (L.n || L.id))); }
+  function lineRaw(L) { return L.name || (COLOR_NAMES[L.color] ? COLOR_NAMES[L.color] + ' line' : 'Line ' + (L.n || L.id)); }
+  function lineName(L) { return esc(lineRaw(L)); }
   function profitHtml(v) { return '<span class="' + (v < 0 ? 'neg' : 'pos') + '">' + (v < 0 ? '−' : '+') + ' ' + fmt(Math.abs(v)) + '</span>'; }
 
   function renderSheet() {
@@ -753,7 +754,7 @@
         '<span class="muted">' + labels[g.kind] + ' · ' + esc(g.desc) + '</span>' +
         '<span class="bar"><span style="width:' + Math.round(p.frac * 100) + '%;background:#6FD08C"></span></span>' +
         '<span class="lrow muted small"><span' + (p.bad ? ' class="neg"' : '') + '>' + esc(p.bad || p.text) + '</span><span class="grow"></span><span>' + left + '</span></span>' +
-        (g.spot ? '<button type="button" class="btn small" data-act="gotospot" data-id="' + g.id + '">Show on map</button>' : '') + '</div>';
+        '<span class="lrow">' + (g.spot ? '<button type="button" class="btn small" data-act="gotospot" data-id="' + g.id + '">Show on map</button>' : '') + '<span class="grow"></span><button type="button" class="btn small" data-act="skipgoal" data-id="' + g.id + '">Skip</button></span></div>';
     });
     var evs = T.activeEvents(state);
     h += '<div class="muted small"><b>Events right now</b></div>';
@@ -770,19 +771,112 @@
         h += '<div class="lrow muted small"><span>Day ' + d.day + ' · ' + esc(d.title) + '</span><span class="grow"></span><span class="pos">+' + fmt(d.reward) + '</span></div>';
       });
     }
+    if (G.missed && G.missed.length) {
+      h += '<div class="muted small"><b>Recently missed</b></div>';
+      G.missed.slice(0, 5).forEach(function (d) {
+        h += '<div class="lrow muted small"><span>Day ' + d.day + ' · ' + esc(d.title) + '</span><span class="grow"></span><span class="neg">missed</span></div>';
+      });
+    } else if (G.failed) h += '<div class="muted small">Contracts missed before this update were not recorded by name.</div>';
     return h;
   }
 
-  function sheetLines() {
-    var h = head('Lines', state.lines.length ? '' : 'You have no lines yet');
-    state.lines.forEach(function (L) {
-      var ls = (state.stats && state.stats.lines[L.id]) || { load: 0, profit: 0 };
+  /* ---------- the lines list: search, sort and filters ---------- */
+  var LV_KEY = 'transit-game-linesview';
+  var SORTS = [['new', 'Oldest first'], ['newest', 'Newest first'], ['name', 'Name A to Z'], ['profit', 'Profit, high to low'], ['profitlow', 'Profit, low to high'],
+    ['riders', 'Most riders'], ['load', 'Most crowded'], ['stops', 'Most stops'], ['length', 'Longest'], ['vehicles', 'Most vehicles']];
+  var STATUSES = [['all', 'All lines'], ['crowded', 'Crowded (85%+ full)'], ['over', 'Overloaded (95%+)'], ['loss', 'Losing money'], ['quiet', 'Nearly empty (under 20%)'],
+    ['disrupted', 'Hit by an event'], ['unfinished', 'Unfinished (under 2 stops)']];
+  function lv() {
+    if (!ui.lv) {
+      ui.lv = { sort: 'new', mode: 'all', status: 'all', country: 'all', q: '' };
+      try { var o = JSON.parse(window.localStorage.getItem(LV_KEY) || 'null'); if (o) { ui.lv.sort = o.sort || 'new'; ui.lv.mode = o.mode || 'all'; ui.lv.status = o.status || 'all'; ui.lv.country = o.country || 'all'; } } catch (e) { /* ignore */ }
+    }
+    return ui.lv;
+  }
+  function saveLv() { try { window.localStorage.setItem(LV_KEY, JSON.stringify({ sort: ui.lv.sort, mode: ui.lv.mode, status: ui.lv.status, country: ui.lv.country })); } catch (e) { /* ignore */ } }
+  function lvActive() { var v = lv(); return v.mode !== 'all' || v.status !== 'all' || v.country !== 'all' || !!v.q; }
+
+  /* Countries come from the stop names (Nominatim). Stops not named yet have no country. */
+  function lineCountries(L, sMap) {
+    var out = [];
+    L.stations.forEach(function (id) {
+      var s = sMap.get(id); if (!s || !s.cc) return;
+      if (!out.some(function (c) { return c.cc === s.cc; })) out.push({ cc: s.cc, name: s.country || s.cc });
+    });
+    return out;
+  }
+  function lineRows() {
+    var sMap = S.stationMap(state);
+    var v = lv(), st = state.stats || { lines: {} }, fxo = window.TGGoals ? TGGoals.fx(state) : null, q = v.q.trim().toLowerCase();
+    var rows = state.lines.map(function (L, i) {
+      var ls = st.lines[L.id] || { load: 0, profit: 0, riders: 0 };
+      return { L: L, ls: ls, i: i, km: S.lineLenM(state, L) / 1000, hit: !!(fxo && (fxo.strike[L.id] || (fxo.cap[L.id] || 1) < 1)), work: L.stations.length >= 2, countries: lineCountries(L, sMap) };
+    });
+    rows = rows.filter(function (r) {
+      if (v.mode !== 'all' && r.L.mode !== v.mode) return false;
+      if (v.country === 'none') { if (r.countries.length) return false; }
+      else if (v.country !== 'all' && !r.countries.some(function (c) { return c.cc === v.country; })) return false;
+      if (q && lineRaw(r.L).toLowerCase().indexOf(q) < 0) return false;
+      switch (v.status) {
+        case 'crowded': return r.work && r.ls.load >= 0.85;
+        case 'over': return r.work && r.ls.load >= 0.95;
+        case 'loss': return r.work && r.ls.profit < 0;
+        case 'quiet': return r.work && r.ls.load < 0.2;
+        case 'disrupted': return r.hit;
+        case 'unfinished': return !r.work;
+      }
+      return true;
+    });
+    var by = {
+      new: function (a, b) { return a.i - b.i; },
+      newest: function (a, b) { return b.i - a.i; },
+      name: function (a, b) { return lineRaw(a.L).localeCompare(lineRaw(b.L), undefined, { numeric: true, sensitivity: 'base' }); },
+      profit: function (a, b) { return b.ls.profit - a.ls.profit; },
+      profitlow: function (a, b) { return a.ls.profit - b.ls.profit; },
+      riders: function (a, b) { return b.ls.riders - a.ls.riders; },
+      load: function (a, b) { return b.ls.load - a.ls.load; },
+      stops: function (a, b) { return b.L.stations.length - a.L.stations.length; },
+      length: function (a, b) { return b.km - a.km; },
+      vehicles: function (a, b) { return b.L.vehicles - a.L.vehicles; }
+    };
+    rows.sort(function (a, b) { return (by[v.sort] || by.new)(a, b) || a.i - b.i; });
+    return rows;
+  }
+  function lineListHtml() {
+    var rows = lineRows(), h = '';
+    if (state.lines.length > 1 || lvActive()) {
+      h += '<div class="lrow muted small"><span>Showing ' + rows.length + ' of ' + state.lines.length + ' lines</span><span class="grow"></span>' +
+        (lvActive() ? '<button type="button" class="linkbtn" data-act="clearlv">Clear filters</button>' : '') + '</div>';
+    }
+    rows.forEach(function (r) {
+      var L = r.L, ls = r.ls;
       h += '<button type="button" class="card linecard" data-act="selline" data-id="' + L.id + '">' +
         '<span class="lrow"><span class="dot" style="background:' + L.color + '"></span><b>' + lineName(L) + '</b><span class="grow"></span>' + profitHtml(ls.profit) + '/day</span>' +
-        '<span class="muted">' + MODES[L.mode].name + ' · ' + L.stations.length + ' stops · ' + L.vehicles + ' vehicles</span>' +
+        '<span class="muted">' + MODES[L.mode].name + ' · ' + L.stations.length + ' stops · ' + r.km.toFixed(1) + ' km · ' + L.vehicles + ' vehicles' + (r.countries.length ? ' · ' + esc(r.countries.map(function (c) { return c.name; }).slice(0, 2).join(', ')) + (r.countries.length > 2 ? ' +' + (r.countries.length - 2) : '') : '') + (r.hit ? ' · <span class="neg">disrupted</span>' : '') + '</span>' +
         '<span class="bar"><span style="width:' + Math.min(100, Math.round(ls.load * 100)) + '%;background:' + (ls.load > 0.85 ? '#F28A1E' : '#E9E9E9') + '"></span></span>' +
-        '<span class="muted">' + Math.round(ls.load * 100) + '% full at peak</span></button>';
+        '<span class="muted">' + Math.round(ls.load * 100) + '% full at peak · ' + num(ls.riders) + ' riders</span></button>';
     });
+    if (!rows.length && state.lines.length) h += '<div class="card muted">No lines match. Try clearing the filters.</div>';
+    return h;
+  }
+  function sheetLines() {
+    var h = head('Lines', state.lines.length ? '' : 'You have no lines yet'), v = lv();
+    if (state.lines.length >= 2) {
+      var modes = {}; state.lines.forEach(function (L) { modes[L.mode] = true; });
+      var opt = function (list, cur) { return list.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === cur ? ' selected' : '') + '>' + o[1] + '</option>'; }).join(''); };
+      var cMap = {}, sM = S.stationMap(state), anyNone = false;
+      state.lines.forEach(function (L) { var cs = lineCountries(L, sM); if (!cs.length) anyNone = true; cs.forEach(function (c) { cMap[c.cc] = c.name; }); });
+      var countryList = [['all', 'All countries']].concat(Object.keys(cMap).sort(function (a, b) { return cMap[a].localeCompare(cMap[b]); }).map(function (k) { return [k, cMap[k]]; }));
+      if (anyNone) countryList.push(['none', 'Country not known yet']);
+      if (v.country !== 'all' && v.country !== 'none' && !cMap[v.country]) countryList.push([v.country, v.country]);
+      var modeList = [['all', 'All modes']].concat(S.MODE_ORDER.filter(function (k) { return modes[k] || v.mode === k; }).map(function (k) { return [k, MODES[k].name]; }));
+      h += '<div class="lfilters"><input id="lineSearch" type="search" placeholder="Search lines by name" value="' + esc(v.q) + '" autocomplete="off">' +
+        '<div class="lfrow"><label>Sort<select data-lv="sort">' + opt(SORTS, v.sort) + '</select></label>' +
+        '<label>Mode<select data-lv="mode">' + opt(modeList, v.mode) + '</select></label>' +
+        '<label>Show<select data-lv="status">' + opt(STATUSES, v.status) + '</select></label></div>' +
+        (countryList.length > 1 ? '<div class="lfrow"><label>Country<select data-lv="country">' + opt(countryList, v.country) + '</select></label></div>' : '') + '</div>';
+    }
+    h += '<div id="lineList" class="lineList">' + lineListHtml() + '</div>';
     h += '<button type="button" class="btn big dashed" data-act="newline">+ New line</button>';
     return h;
   }
@@ -851,7 +945,13 @@
       case 'close': ui.renaming = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
+      case 'clearlv': lv().mode = 'all'; lv().status = 'all'; lv().country = 'all'; lv().q = ''; saveLv(); renderSheet(); break;
       case 'selstation': selectStation(id); break;
+      case 'skipgoal': {
+        var sk = TGGoals.skip(state, id);
+        if (sk) { toast('Skipped: ' + sk.title); scheduleSave(); renderSheet(); }
+        break;
+      }
       case 'gotospot': {
         var gg = state.goals && state.goals.active.filter(function (q) { return q.id === id; })[0];
         if (gg && gg.spot) { map.setView(map.unproject(L.point(centerPx.x + gg.spot.x, centerPx.y + gg.spot.y), Z), Math.max(map.getZoom(), 14), { animate: true }); ui.sheet = 'none'; renderSheet(); renderDock(); }
@@ -1260,6 +1360,16 @@
     map.on('mouseout', function () { ui.hover = null; });
 
     $('sheet').addEventListener('click', onSheetClick);
+    $('sheet').addEventListener('change', function (e) {
+      var k = e.target && e.target.getAttribute && e.target.getAttribute('data-lv');
+      if (!k || !state) return;
+      lv()[k] = e.target.value; saveLv(); renderSheet();
+    });
+    $('sheet').addEventListener('input', function (e) {
+      if (!e.target || e.target.id !== 'lineSearch' || !state) return;
+      lv().q = e.target.value;
+      var box = $('lineList'); if (box) box.innerHTML = lineListHtml();
+    });
     $('sheet').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && e.target.id === 'lineNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=saverename]') }); }
     });

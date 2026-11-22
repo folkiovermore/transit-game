@@ -230,7 +230,7 @@
 
   function metrics(state) {
     var lines = working(state), sMap = S.stationMap(state);
-    var m = { lines: lines.length, maxKm: 0, modes: {}, ccs: [], stationsWithCc: 0, maxLineProfit: 0, allBus: lines.length > 0, maxLoad: 0 };
+    var m = { lines: lines.length, maxKm: 0, modes: {}, ccs: [], stationsWithCc: 0, maxLineProfit: 0, allBus: lines.length > 0, maxLoad: 0, stuck: 0 };
     var stats = state.stats || { lines: {}, riders: 0, profit: 0 };
     var ids = [], seen = {};
     lines.forEach(function (L) {
@@ -238,7 +238,10 @@
       m.modes[L.mode] = true;
       if (L.mode !== 'bus') m.allBus = false;
       var ls = stats.lines[L.id];
-      if (ls) { m.maxLineProfit = Math.max(m.maxLineProfit, ls.profit); m.maxLoad = Math.max(m.maxLoad, ls.load); }
+      if (ls) {
+        m.maxLineProfit = Math.max(m.maxLineProfit, ls.profit); m.maxLoad = Math.max(m.maxLoad, ls.load);
+        if (ls.load >= 0.95 && L.vehicles >= S.BAL.maxVehicles) m.stuck++;     // full and cannot take more vehicles
+      }
       L.stations.forEach(function (id) {
         if (seen[id]) return; seen[id] = true; ids.push(id);
         var s = sMap.get(id);
@@ -346,7 +349,7 @@
       return { kind: 'challenge', title: 'Bus-only: earn ' + money(T) + ' a day', desc: 'Reach this daily profit while every line is a bus line.', target: T, reward: round5k(base * 2.0) };
     },
     smooth: function (state, m, base) {
-      if (m.lines < 2) return null;
+      if (m.lines < 2 || m.stuck) return null;
       var cur = state.stats ? state.stats.riders : 0;
       var T = niceRound(Math.max(300, cur * 1.3));
       return { kind: 'challenge', title: 'No crowding: ' + num(T) + ' riders a day', desc: 'Reach this many riders with every line under 95% full at peak. Add vehicles where it is crowded.', target: T, reward: round5k(base * 1.5) };
@@ -387,6 +390,7 @@
       case 'smooth':
         f = st.riders / g.target; text = num(st.riders) + ' of ' + num(g.target) + ' a day';
         if (m.lines < 2) bad = 'Needs at least 2 lines';
+        else if (m.stuck) bad = 'A line is ' + Math.round(m.maxLoad * 100) + '% full and has the most vehicles allowed. Build a parallel line, or skip this goal';
         else if (m.maxLoad >= 0.95) bad = 'A line is ' + Math.round(m.maxLoad * 100) + '% full';
         break;
       case 'starline': f = m.maxLineProfit / g.target; text = money(m.maxLineProfit) + ' of ' + money(g.target) + ' a day'; break;
@@ -410,7 +414,7 @@
     while (G.active.length < 3 && guard++ < 40) {
       var haveKeys = G.active.map(function (g) { return g.key; });
       var haveKinds = G.active.map(function (g) { return g.kind; });
-      var keys = Object.keys(MAKERS).filter(function (k) { return haveKeys.indexOf(k) < 0; });
+      var keys = Object.keys(MAKERS).filter(function (k) { return haveKeys.indexOf(k) < 0 && k !== G.avoidKey; });
       if (!keys.length) break;
       // prefer a kind that is not shown yet, and not the one just completed
       var fresh = keys.filter(function (k) { var kd = kindOf(k); return haveKinds.indexOf(kd) < 0 && kd !== G.lastKind; });
@@ -430,6 +434,18 @@
   }
   function kindOf(key) { return { linelen: 'build', places: 'build', countries: 'build', lines: 'build', modeline: 'build', pax: 'numbers', dailyriders: 'numbers', profit: 'numbers', balance: 'numbers', spot: 'contract', ridersoon: 'contract', busonly: 'challenge', smooth: 'challenge', starline: 'challenge' }[key]; }
 
+  /* Drop a goal you do not want, free. A different one takes its place. */
+  function skip(state, id) {
+    var G = ensureGoals(state), g = G.active.filter(function (q) { return q.id === id; })[0];
+    if (!g) return null;
+    G.active = G.active.filter(function (q) { return q.id !== id; });
+    G.skipped = (G.skipped || 0) + 1;
+    G.avoidKey = g.key;
+    refill(state);
+    G.avoidKey = null;
+    return g;
+  }
+
   /* Checks every active goal: pays out finished ones, drops expired contracts, tops the list up. Returns events for the UI. */
   function check(state) {
     var G = ensureGoals(state), out = [], m = metrics(state);
@@ -444,6 +460,9 @@
         out.push({ type: 'goal', goal: g });
       } else if (g.deadline !== undefined && state.day > g.deadline) {
         G.failed++; G.lastKind = g.kind;
+        if (!G.missed) G.missed = [];
+        G.missed.unshift({ title: g.title, day: state.day });
+        if (G.missed.length > 25) G.missed.pop();
         out.push({ type: 'goalExpired', goal: g });
       } else keep.push(g);
     });
@@ -455,7 +474,7 @@
   S.setHooks({ fx: fx, events: eventsDaily, goals: check });
 
   var api = {
-    ensure: ensureGoals, check: check, progress: progress, metrics: metrics, fx: fx, seasonOf: seasonOf, SEASONS: SEASONS,
+    ensure: ensureGoals, check: check, skip: skip, progress: progress, metrics: metrics, fx: fx, seasonOf: seasonOf, SEASONS: SEASONS,
     activeEvents: activeEvents, spawnEvent: spawnEvent, EVENT_TYPES: EVENT_TYPES, YEAR: YEAR
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
