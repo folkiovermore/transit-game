@@ -1091,6 +1091,7 @@
     var act = t.getAttribute('data-act'), id = +t.getAttribute('data-id');
     var res;
     switch (act) {
+      case 'loadfirst': bulk.first = bulk.first === id ? null : id; bulk.on = true; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'bulkload': bulk.on = !bulk.on; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
       case 'set': {
         var key = t.getAttribute('data-key');
@@ -1320,7 +1321,7 @@
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
   var chunkBusy = false, chunkFailed = {}, chunkTimer = null, LOAD_ZOOM = 13;
-  var bulk = { on: false, left: 0 }, loadingKey = null;
+  var bulk = { on: false, left: 0, first: null }, loadingKey = null;   // first = id of the stop whose area is loaded first
 
   /* Which map areas (chunks) the network needs: everything within reach of a stop on a working line. */
   function needInfo() {
@@ -1336,7 +1337,7 @@
       var ks = TGOsm.chunksIn(TGOsm.bboxFor(ll.lat, ll.lng, radius[id]));
       var miss = ks.filter(function (k) { return !(state.chunks && state.chunks[k]); });
       ks.forEach(function (k) { all[k] = 1; });
-      per.push({ name: st.name, total: ks.length, missing: miss.length });
+      per.push({ id: st.id, name: st.name, total: ks.length, missing: miss.length, keys: miss, ll: ll });
     });
     var keys = Object.keys(all), missing = keys.filter(function (k) { return !(state.chunks && state.chunks[k]); });
     per = per.filter(function (x) { return x.missing > 0; }).sort(function (a, b) { return b.missing - a.missing; });
@@ -1359,10 +1360,15 @@
     else if (ni.missing.length && bulk.on) h += '<span class="muted">Waiting for the next area…</span>';
     else if (!ni.missing.length) h += '<span class="muted">Everything your stops can reach is loaded.</span>';
     else h += '<span class="muted">' + ni.missing.length + ' areas around your stops are not loaded yet. They load when you look at them, or all at once below.</span>';
+    if (bulk.on && ni.missing.length) h += '<span class="muted small">While this runs, moving around the map does not load anything extra.</span>';
     if (failed) h += '<span class="neg small">' + failed + ' area' + (failed > 1 ? 's' : '') + ' failed and will be tried again soon.</span>';
     if (ni.per.length) {
       h += '<span class="muted small"><b>Missing data near</b></span>';
-      ni.per.slice(0, 6).forEach(function (x) { h += '<span class="lrow small"><span>' + esc(x.name) + '</span><span class="grow"></span><span class="muted">' + (x.total - x.missing) + ' of ' + x.total + '</span></span>'; });
+      h += '<span class="muted small">Tap a stop to load its area first.</span>';
+      ni.per.slice(0, 6).forEach(function (x) {
+        var first = bulk.first === x.id;
+        h += '<button type="button" class="lrow small pick' + (first ? ' on' : '') + '" data-act="loadfirst" data-id="' + x.id + '"><span>' + esc(x.name) + (first ? ' · loading first' : '') + '</span><span class="grow"></span><span class="muted">' + (x.total - x.missing) + ' of ' + x.total + '</span></button>';
+      });
       if (ni.per.length > 6) h += '<span class="muted small">and ' + (ni.per.length - 6) + ' more stops</span>';
     }
     if (ni.missing.length) h += '<button type="button" class="btn big ' + (bulk.on ? '' : 'primary') + '" data-act="bulkload">' + (bulk.on ? 'Stop loading' : 'Load data around my stops') + '</button>';
@@ -1389,14 +1395,17 @@
     if ($('start').className.indexOf('hidden') < 0) return;
     var c = map.getCenter(), now = Date.now(), keys = [];
     function fresh(k) { return !(state.chunks && state.chunks[k]) && !(chunkFailed[k] && now - chunkFailed[k] < 90000); }
-    if (map.getZoom() >= LOAD_ZOOM) {
+    if (map.getZoom() >= LOAD_ZOOM && !bulk.on) {   // while the queue runs, looking around the map loads nothing; it resumes when the queue is done or stopped
       var bd = map.getBounds();
       keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(fresh);
     }
     if (!keys.length && bulk.on) {
       var ni = needInfo();
       bulk.left = ni.missing.length;
-      keys = ni.missing.filter(fresh);
+      var pri = bulk.first ? ni.per.filter(function (x) { return x.id === bulk.first; })[0] : null;
+      if (bulk.first && !pri) bulk.first = null;                       // that stop is fully loaded
+      if (pri) { keys = pri.keys.filter(fresh); if (keys.length) c = pri.ll; }
+      if (!keys.length) keys = ni.missing.filter(fresh);
       if (!ni.missing.length) { bulk.on = false; toast('All the data around your stops is loaded', 3500); if (ui.sheet === 'save') renderSheet(); }
     }
     if (!keys.length) return;
