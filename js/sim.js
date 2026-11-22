@@ -648,6 +648,28 @@
     return { ok: true };
   }
 
+  /* Takes a stop off a line (any position). The station itself stays on the map. Needs at least two stops to remain.
+     Refunds half the platform and half of any track that is no longer needed. */
+  function removeStopFromLine(state, lineId, stationId) {
+    var line = lineById(state, lineId);
+    if (!line) return { ok: false, msg: 'No line selected' };
+    var k = line.stations.indexOf(stationId);
+    if (k < 0) return { ok: false, msg: 'Not on this line' };
+    if (line.stations.length <= 2) return { ok: false, msg: 'A line needs two stops. Delete the line instead.' };
+    var sMap = stationMap(state), m = MODES[line.mode], n = line.stations.length;
+    function km(i, j) { return edgeM(state, sMap.get(line.stations[i]), sMap.get(line.stations[j]), m.straight) / 1000; }
+    var freed = 0;
+    if (k === 0) freed = km(0, 1);
+    else if (k === n - 1) freed = km(n - 2, n - 1);
+    else freed = Math.max(0, km(k - 1, k) + km(k, k + 1) - km(k - 1, k + 1));
+    var refund = 0.5 * (m.platform + freed * m.trackKm);
+    if (k === 0) { line.stations.shift(); line.flips.shift(); }
+    else if (k === n - 1) { line.stations.pop(); line.flips.pop(); }
+    else { line.stations.splice(k, 1); line.flips.splice(k - 1, 2, false); }
+    state.balance += refund;
+    return { ok: true, refund: refund };
+  }
+
   function setVehicles(state, lineId, delta) {
     var line = lineById(state, lineId), m = line && MODES[line.mode];
     if (!line || line.stations.length < 2) return { ok: false, msg: 'Add at least two stops first' };
@@ -707,7 +729,7 @@
     coverage: coverage, mScale: mScale, edgeM: edgeM, lineLenM: lineLenM, MODES: MODES, MODE_ORDER: MODE_ORDER, BAL: BAL, COLORS: COLORS,
     newState: newState, computeNetwork: computeNetwork, endDay: endDay, isUnlocked: isUnlocked,
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
-    undoLastStop: undoLastStop, insertStopInLine: insertStopInLine, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
+    undoLastStop: undoLastStop, insertStopInLine: insertStopInLine, removeStopFromLine: removeStopFromLine, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
     toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx, edgeLenFor: edgeLenFor,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
     fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx

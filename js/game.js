@@ -1108,6 +1108,12 @@
     var waiting = state.stats && state.stats.waiting[s.id] || 0;
     var h = head(esc(s.name), serving.length ? 'Served by ' + serving.length + (serving.length > 1 ? ' lines' : ' line') : 'No lines yet');
     h += '<div class="chips">' + serving.map(function (L) { return '<span class="chip"><span class="dot" style="background:' + L.color + '"></span>' + lineName(L) + '</span>'; }).join('') + '</div>';
+    if (serving.length) {
+      h += '<div class="rmlines">' + serving.map(function (L) {
+        var can = L.stations.length > 2;
+        return '<button type="button" class="btn small" data-act="rmfromline" data-id="' + L.id + '"' + (can ? '' : ' disabled title="A line needs two stops"') + '>Remove from ' + lineName(L) + '</button>';
+      }).join('') + '</div>';
+    }
     h += '<div class="stats"><div><b>' + num(pop) + '</b><span>residents nearby</span></div><div><b>' + num(jobs) + '</b><span>jobs nearby</span></div>' +
       '<div><b>' + num(waiting) + '</b><span>left behind / day</span></div></div>';
     if (ui.renamingStation) {
@@ -1139,6 +1145,11 @@
       case 'close': ui.renaming = false; ui.renamingStation = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
+      case 'rmfromline':
+        if (!window.confirm('Take this stop off the line? The station stays on the map and you get half the cost back.')) break;
+        res = S.removeStopFromLine(state, id, ui.selStation);
+        if (!res.ok) toast(res.msg); else { toast('Stop removed, ' + fmt(res.refund) + ' back'); afterChange(); renderSheet(); }
+        break;
       case 'clearlv': lv().mode = 'all'; lv().status = 'all'; lv().country = 'all'; lv().q = ''; saveLv(); renderSheet(); break;
       case 'selstation': selectStation(id); break;
       case 'skipgoal': {
