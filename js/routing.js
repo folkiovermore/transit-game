@@ -21,7 +21,8 @@
 
   /* Route from a to b. prevDir is the unit direction the line was travelling when it
    * arrived at a (or null). flip swaps the two possible bend layouts. */
-  function routeSegment(a, b, prevDir, flip) {
+  function routeSegment(a, b, prevDir, flip, straight) {
+    if (straight) return [a, b];
     var dx = b.x - a.x, dy = b.y - a.y;
     var adx = Math.abs(dx), ady = Math.abs(dy);
     var sx = sign(dx), sy = sign(dy);
@@ -42,11 +43,11 @@
 
   /* points: station positions in order. flips: array (length points.length-1) of booleans.
    * Returns one polyline per segment between consecutive stations. */
-  function buildSegments(points, flips) {
+  function buildSegments(points, flips, straight) {
     var segs = [];
     var prevDir = null;
     for (var i = 0; i < points.length - 1; i++) {
-      var seg = routeSegment(points[i], points[i + 1], prevDir, !!(flips && flips[i]));
+      var seg = routeSegment(points[i], points[i + 1], prevDir, !!(flips && flips[i]), straight);
       segs.push(seg);
       prevDir = unit(seg[seg.length - 2], seg[seg.length - 1]);
     }
@@ -54,10 +55,10 @@
   }
 
   /* The whole line as one polyline (consecutive duplicates removed). */
-  function buildBasePath(points, flips) {
+  function buildBasePath(points, flips, straight) {
     if (!points.length) return [];
     var out = [points[0]];
-    buildSegments(points, flips).forEach(function (seg) {
+    buildSegments(points, flips, straight).forEach(function (seg) {
       for (var k = 1; k < seg.length; k++) out.push(seg[k]);
     });
     return dedupe(out);

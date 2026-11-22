@@ -13,8 +13,10 @@
   MODES.lightrail = { name: 'Light rail', speed: 40, cap: 400, trackKm: 1100000, platform: 150000, vehicle: 1400000, vehicleDay: 800, maintKmDay: 180, minSpacingM: 300, dwellMin: 0.9, catchM: 800, unlockPax: 50000 };
   MODES.intercity = { name: 'Intercity rail', speed: 160, cap: 700, trackKm: 1200000, platform: 800000, vehicle: 4000000, vehicleDay: 2500, maintKmDay: 100, minSpacingM: 8000, dwellMin: 4, catchM: 1500, unlockPax: 1500000 };
   MODES.ferry = { name: 'Ferry', speed: 25, cap: 300, trackKm: 150000, platform: 300000, vehicle: 1500000, vehicleDay: 700, maintKmDay: 20, minSpacingM: 500, dwellMin: 3, catchM: 700, unlockPax: 40000 };
-  MODES.bus.vlen = 1.7; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
-  var MODE_ORDER = ['bus', 'tram', 'lightrail', 'rail', 'metro', 'intercity', 'ferry'];
+  MODES.coach = { name: 'Coach', speed: 70, cap: 50, trackKm: 120000, platform: 40000, vehicle: 260000, vehicleDay: 420, maintKmDay: 25, minSpacingM: 5000, dwellMin: 6, catchM: 1000, unlockPax: 75000 };
+  MODES.plane = { name: 'Plane', speed: 650, cap: 180, trackKm: 3000, platform: 20000000, platDay: 15000, vehicle: 15000000, vehicleDay: 60000, fareMult: 0.2, maintKmDay: 0, minSpacingM: 150000, dwellMin: 35, catchM: 4000, unlockPax: 3000000, straight: true };
+  MODES.bus.vlen = 1.7; MODES.coach.vlen = 2.4; MODES.plane.vlen = 3.4; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
+  var MODE_ORDER = ['bus', 'tram', 'lightrail', 'coach', 'rail', 'metro', 'intercity', 'ferry', 'plane'];
 
   var BAL = {
     startBalance: 3000000,
@@ -69,7 +71,9 @@
     var n = Math.PI * (1 - 2 * (state.wy0 + y) / state.wsz);
     return state.mpp * Math.cos(Math.atan(Math.sinh(n))) / state.cos0;
   }
-  function edgeM(state, a, b) { return edgeLenPx(a, b) * mScale(state, (a.y + b.y) / 2); }
+  /* straight = true for planes: they fly in a straight line instead of bending at 45 degrees. */
+  function edgeLenFor(a, b, straight) { return straight ? Math.hypot(b.x - a.x, b.y - a.y) : edgeLenPx(a, b); }
+  function edgeM(state, a, b, straight) { return edgeLenFor(a, b, straight) * mScale(state, (a.y + b.y) / 2); }
   function stationMap(state) {
     var m = new Map();
     state.stations.forEach(function (s) { m.set(s.id, s); });
@@ -78,13 +82,13 @@
   function lineLenPx(state, line, sMap) {
     sMap = sMap || stationMap(state);
     var s = 0;
-    for (var i = 0; i < line.stations.length - 1; i++) s += edgeLenPx(sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]));
+    for (var i = 0; i < line.stations.length - 1; i++) s += edgeLenFor(sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]), MODES[line.mode].straight);
     return s;
   }
   function lineLenM(state, line, sMap) {
     sMap = sMap || stationMap(state);
     var s = 0;
-    for (var i = 0; i < line.stations.length - 1; i++) s += edgeM(state, sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]));
+    for (var i = 0; i < line.stations.length - 1; i++) s += edgeM(state, sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]), MODES[line.mode].straight);
     return s;
   }
   function roundTripHours(state, line, sMap) {
@@ -196,7 +200,7 @@
       for (var i = 0; i < L.stations.length; i++) node(L.stations[i], L.id);
       for (var j = 0; j < L.stations.length - 1; j++) {
         var a = sMap.get(L.stations[j]), b = sMap.get(L.stations[j + 1]);
-        var km = edgeM(state, a, b) / 1000;
+        var km = edgeM(state, a, b, m.straight) / 1000;
         var w = km / m.speed * 60 + m.dwellMin;
         var na = node(a.id, L.id), nb = node(b.id, L.id);
         addEdge(na, nb, w, { lid: L.id, i: j, dir: 0, km: km });
@@ -335,13 +339,13 @@
     var stats = { lines: {}, riders: 0, revenue: 0, cost: 0, profit: 0, waiting: {}, potentialTrips: potential, edgeLoad: {} };
     lines.forEach(function (L) {
       var m = MODES[L.mode], info = lineInfo.get(L.id);
-      var cost = (L.vehicles * m.vehicleDay + info.lenKm * m.maintKmDay) * fx.cost + L.stations.length * BAL.platformDay;
+      var cost = (L.vehicles * m.vehicleDay + info.lenKm * m.maintKmDay) * fx.cost + L.stations.length * (m.platDay || BAL.platformDay);
       stats.lines[L.id] = { riders: 0, revenue: 0, cost: cost, profit: 0, load: 0 };
     });
     state.lines.forEach(function (L) {
       if (stats.lines[L.id] !== undefined) return;
       var idle = 0;
-      if (L.stations.length >= 2 && fx.strike[L.id]) idle = MODES[L.mode].maintKmDay * lineLenM(state, L, sMap) / 1000 * fx.cost + L.stations.length * BAL.platformDay;   // on strike: only track and stops cost money
+      if (L.stations.length >= 2 && fx.strike[L.id]) idle = MODES[L.mode].maintKmDay * lineLenM(state, L, sMap) / 1000 * fx.cost + L.stations.length * (MODES[L.mode].platDay || BAL.platformDay);   // on strike: only track and stops cost money
       stats.lines[L.id] = { riders: 0, revenue: 0, cost: idle, profit: 0, load: 0, strike: !!(L.stations.length >= 2 && fx.strike[L.id]) };
     });
     ratio.forEach(function (r, k) {
@@ -359,7 +363,7 @@
       var carried = rt.trips * frac;
       captured += carried;
       var km = 0;
-      rt.edges.forEach(function (e) { km += e.km; });
+      rt.edges.forEach(function (e) { km += e.km * (MODES[lineInfo.get(e.lid).line.mode].fareMult || 1); });   // fareMult: air fares per km are far lower than ground fares in this game
       var revenue = carried * 2 * (BAL.fareBase + BAL.fareKm * km) * fx.fare;
       var prevLid = null;
       rt.edges.forEach(function (e) {
@@ -495,7 +499,7 @@
     var cost = m.platform;
     var nId = line.stations.length ? line.stations[atStart ? 0 : line.stations.length - 1] : null;
     var neighbour = nId !== null ? sMap.get(nId) : null;
-    var segKm = neighbour ? edgeM(state, neighbour, station) / 1000 : 0;
+    var segKm = neighbour ? edgeM(state, neighbour, station, m.straight) / 1000 : 0;
     return { cost: cost + segKm * m.trackKm, segKm: segKm };
   }
 
@@ -512,7 +516,7 @@
     if (line.stations.length) {
       var nb = sMap.get(line.stations[front ? 0 : line.stations.length - 1]);
       var dm = Math.hypot(nb.x - station.x, nb.y - station.y) * mScale(state, station.y);
-      if (dm < m.minSpacingM) return { ok: false, msg: 'Too close for ' + m.name + ' (min ' + m.minSpacingM + ' m)' };
+      if (dm < m.minSpacingM) return { ok: false, msg: 'Too close for ' + m.name + ' (min ' + (m.minSpacingM >= 1000 ? m.minSpacingM / 1000 + ' km' : m.minSpacingM + ' m') + ')' };
     }
     if (state.balance < res.cost) return { ok: false, msg: 'Need ' + fmtMoney(res.cost) + ' for this stop' };
     state.balance -= res.cost;
@@ -540,7 +544,7 @@
     if (n > 1) {
       var a = sMap.get(front ? line.stations[0] : line.stations[n - 1]);
       var b = sMap.get(front ? line.stations[1] : line.stations[n - 2]);
-      refund += edgeM(state, a, b) / 1000 * m.trackKm;
+      refund += edgeM(state, a, b, m.straight) / 1000 * m.trackKm;
     }
     if (front) { line.stations.shift(); line.flips.shift(); }
     else { line.stations.pop(); if (n > 1) line.flips.pop(); }
@@ -592,7 +596,7 @@
     newState: newState, computeNetwork: computeNetwork, endDay: endDay, isUnlocked: isUnlocked,
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
     undoLastStop: undoLastStop, setVehicles: setVehicles, deleteLine: deleteLine, reverseLine: reverseLine,
-    toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx,
+    toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx, edgeLenFor: edgeLenFor,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
     fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx
   };

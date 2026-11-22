@@ -18,7 +18,7 @@
   var state = null, centerPx = null;
   var gfx = new Map();
   var V = { cx: 0, cy: 0, s: 1, w: 0, h: 0 };
-  var ui = { tool: 'move', editing: null, selLine: null, selStation: null, sheet: 'none', speed: 1, dayProg: 0, showDemand: true, hover: null, pendingStation: null, lastS: 0, hint: false };
+  var ui = { tool: 'move', editing: null, selLine: null, selStation: null, sheet: 'none', speed: 1, dayProg: 0, showDemand: true, view: { waiting: true, names: true, vehicles: true, markers: true, chunks: true, hide: {} }, hover: null, pendingStation: null, lastS: 0, hint: false };
   var saveTimer = null;
   var tileErrors = 0, tilesLoaded = false;
   function noTiles() { return tileErrors >= 4 && !tilesLoaded; }
@@ -28,6 +28,7 @@
     pin: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 8v8M8 12h8"/></svg>',
     lines: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18h6l4-4h6M4 6h8l4 4h4"/></svg>',
     eye: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
     save: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>',
     chart: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V11m7 9V5m7 15v-6"/></svg>',
     flag: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 21V4m0 1h11l-2 4 2 4H6"/></svg>',
@@ -56,8 +57,10 @@
       var t = old ? old.t : 0;
       if (L.stations.length < 2) { next.set(L.id, { segs: [], base: [], path: [], len: 0, baseLen: 0, t: t }); return; }
       var pts = L.stations.map(function (id) { return sMap.get(id); });
-      var segs = R.buildSegments(pts, L.flips);
-      var base = R.buildBasePath(pts, L.flips);
+      var straight = !!MODES[L.mode].straight;
+      var segs = R.buildSegments(pts, L.flips, straight);
+      var base = R.buildBasePath(pts, L.flips, straight);
+      if (straight) { next.set(L.id, { segs: segs, base: base, path: base, len: R.pathLength(base), baseLen: R.pathLength(base), t: t }); return; }   // flights are not bundled with other lines
       items.push({ id: L.id, base: base });
       next.set(L.id, { segs: segs, base: base, path: null, len: 0, baseLen: R.pathLength(base), t: t });
     });
@@ -82,14 +85,29 @@
 
   function drawBlocks() {
     if (!ui.showDemand) return;
-    drawChunks();
+    if (ui.view.chunks) drawChunks();
+    ctx.globalCompositeOperation = 'lighter';
     state.blocks.forEach(function (b) {
       var p = toScreen(b);
       if (p.x < -90 || p.y < -90 || p.x > V.w + 90 || p.y > V.h + 90) return;
-      var rp = Math.sqrt(b.pop) * 1.7 * V.s, rj = Math.sqrt(b.jobs) * 1.7 * V.s;
-      if (rp > 1) { ctx.fillStyle = 'rgba(255,170,60,0.30)'; ctx.beginPath(); ctx.arc(p.x, p.y, rp, 0, 6.283); ctx.fill(); }
-      if (rj > 1) { ctx.fillStyle = 'rgba(90,160,255,0.34)'; ctx.beginPath(); ctx.arc(p.x, p.y, rj, 0, 6.283); ctx.fill(); }
+      var rp = Math.sqrt(b.pop) * 2.3 * V.s, rj = Math.sqrt(b.jobs) * 2.3 * V.s;
+      if (rp > 1) { ctx.globalAlpha = Math.min(0.5, 0.10 + Math.sqrt(b.pop) / 110); ctx.drawImage(heatSprite('home'), p.x - rp, p.y - rp, rp * 2, rp * 2); }
+      if (rj > 1) { ctx.globalAlpha = Math.min(0.55, 0.12 + Math.sqrt(b.jobs) / 100); ctx.drawImage(heatSprite('job'), p.x - rj, p.y - rj, rj * 2, rj * 2); }
     });
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* Heat map: each block is a soft glow, and glows add up where blocks overlap. */
+  var heatSprites = {};
+  function heatSprite(kind) {
+    if (heatSprites[kind]) return heatSprites[kind];
+    var c = document.createElement('canvas'); c.width = c.height = 96;
+    var g = c.getContext('2d'), col = kind === 'home' ? '255,120,0' : '30,120,255';
+    var gr = g.createRadialGradient(48, 48, 0, 48, 48, 48);
+    gr.addColorStop(0, 'rgba(' + col + ',1)'); gr.addColorStop(0.35, 'rgba(' + col + ',0.55)'); gr.addColorStop(0.7, 'rgba(' + col + ',0.16)'); gr.addColorStop(1, 'rgba(' + col + ',0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 96, 96);
+    heatSprites[kind] = c;
+    return c;
   }
 
   /* Shows which parts of the map have real homes and jobs loaded. */
@@ -150,7 +168,7 @@
 
   /* contract markers and event areas */
   function drawMarkers() {
-    if (!window.TGGoals || !state.goals) return;
+    if (!ui.view.markers || !window.TGGoals || !state.goals) return;
     var t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
     state.goals.active.forEach(function (g) {
       if (!g.spot) return;
@@ -201,20 +219,20 @@
     var lw = lineWidth();
     state.lines.forEach(function (L) {
       var g = gfx.get(L.id);
-      if (!g || g.path.length < 2) return;
+      if (!g || g.path.length < 2 || !lineShown(L)) return;
       var dim = ui.selLine && ui.selLine !== L.id && !ui.editing ? 0.45 : 1;
       ctx.globalAlpha = dim;
-      strokePath(g.path, lw, L.color);
+      if (MODES[L.mode].straight) { strokePath(g.path, lw * 0.55, L.color, [lw * 2.2, lw * 1.6]); } else strokePath(g.path, lw, L.color);
       drawEndBar(g.path[0], g.path[1], lw, L.color);
       drawEndBar(g.path[g.path.length - 1], g.path[g.path.length - 2], lw, L.color);
       ctx.globalAlpha = 1;
     });
     if (ui.selLine) {
       var sg = gfx.get(ui.selLine), sl = S.lineById(state, ui.selLine);
-      if (sg && sl && sg.path.length >= 2 && !ui.editing) {
+      if (sg && sl && sg.path.length >= 2 && !ui.editing && lineShown(sl)) {
         ctx.globalAlpha = 0.9;
         strokePath(sg.path, lw + 6, 'rgba(255,255,255,0.18)');
-        strokePath(sg.path, lw, sl.color);
+        if (MODES[sl.mode].straight) strokePath(sg.path, lw * 0.55, sl.color, [lw * 2.2, lw * 1.6]); else strokePath(sg.path, lw, sl.color);
         ctx.globalAlpha = 1;
       }
     }
@@ -228,6 +246,7 @@
       var m = MODES[L.mode];
       if (ui.speed > 0 && !state.over) g.t += dt * ui.speed * m.speed * 4 / (2 * Math.max(40, g.baseLen));
       var load = state.stats && state.stats.lines[L.id] ? Math.min(1, state.stats.lines[L.id].load) : 0;
+      if (!ui.view.vehicles || !lineShown(L)) return;
       for (var i = 0; i < L.vehicles; i++) {
         var ph = ((g.t + i / L.vehicles) % 1 + 1) % 1;
         var u = ph < 0.5 ? ph * 2 : 2 - ph * 2;
@@ -236,13 +255,83 @@
         var p = toScreen(pt);
         var len = lw * (m.vlen || 2.8), wid = lw * 1.3;
         ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(ang);
-        ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 2;
-        roundRect(-len / 2, -wid / 2, len, wid, 3); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = L.color; ctx.globalAlpha = 0.35 + 0.65 * load;
-        roundRect(-len / 2 + 2, -wid / 2 + 2, Math.max(2, (len - 4)), wid - 4, 2); ctx.fill();
-        ctx.globalAlpha = 1; ctx.restore();
+        drawVehicleShape(L.mode, len, wid, L.color, load);
+        ctx.restore();
       }
     });
+  }
+
+  /* One shape per mode, drawn top-down with the front pointing right (+x).
+   * The coloured fill gets stronger the fuller the vehicle is. */
+  function bodyCar(x, y, w, h, r, color, load) {
+    ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 1.6;
+    roundRect(x, y, w, h, r); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 0.3 + 0.7 * load; ctx.fillStyle = color;
+    roundRect(x + 1.5, y + 1.5, Math.max(2, w - 3), Math.max(2, h - 3), Math.max(1, r - 1)); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  function windows(x0, x1, h, n) {
+    var gap = (x1 - x0) / n, ww = gap * 0.62;
+    ctx.fillStyle = 'rgba(15,20,26,0.78)';
+    for (var i = 0; i < n; i++) ctx.fillRect(x0 + gap * i + (gap - ww) / 2, -h / 2, ww, h);
+  }
+  function drawVehicleShape(mode, len, wid, color, load) {
+    var h = wid / 2, i;
+    if (mode === 'plane') {
+      var L2 = len * 1.25, span = wid * 2.1;
+      ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(L2 / 2, 0);
+      ctx.quadraticCurveTo(L2 * 0.32, -wid * 0.28, L2 * 0.12, -wid * 0.28);
+      ctx.lineTo(-L2 * 0.04, -span / 2); ctx.lineTo(-L2 * 0.16, -span / 2); ctx.lineTo(-L2 * 0.12, -wid * 0.28);
+      ctx.lineTo(-L2 * 0.38, -wid * 0.26); ctx.lineTo(-L2 * 0.5, -wid * 0.62); ctx.lineTo(-L2 * 0.5, -wid * 0.5);
+      ctx.lineTo(-L2 * 0.5, wid * 0.5); ctx.lineTo(-L2 * 0.5, wid * 0.62); ctx.lineTo(-L2 * 0.38, wid * 0.26);
+      ctx.lineTo(-L2 * 0.12, wid * 0.28); ctx.lineTo(-L2 * 0.16, span / 2); ctx.lineTo(-L2 * 0.04, span / 2);
+      ctx.lineTo(L2 * 0.12, wid * 0.28); ctx.quadraticCurveTo(L2 * 0.32, wid * 0.28, L2 / 2, 0);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = 0.3 + 0.7 * load; ctx.fillStyle = color;
+      ctx.fillRect(-L2 * 0.3, -wid * 0.12, L2 * 0.55, wid * 0.24);
+      ctx.globalAlpha = 1;
+      return;
+    }
+    if (mode === 'ferry') {
+      ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(len / 2, 0); ctx.quadraticCurveTo(len * 0.3, -h, len * 0.05, -h); ctx.lineTo(-len / 2 + 3, -h);
+      ctx.quadraticCurveTo(-len / 2, -h, -len / 2, -h + 3); ctx.lineTo(-len / 2, h - 3); ctx.quadraticCurveTo(-len / 2, h, -len / 2 + 3, h);
+      ctx.lineTo(len * 0.05, h); ctx.quadraticCurveTo(len * 0.3, h, len / 2, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = 0.3 + 0.7 * load; ctx.fillStyle = color; roundRect(-len * 0.32, -h * 0.55, len * 0.5, h * 1.1, 2); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(15,20,26,0.78)'; ctx.fillRect(len * 0.0, -h * 0.3, len * 0.12, h * 0.6);
+      return;
+    }
+    if (mode === 'tram' || mode === 'lightrail') {
+      var parts = mode === 'tram' ? 2 : 3, gap = 2, cw = (len - gap * (parts - 1)) / parts;
+      for (i = 0; i < parts; i++) {
+        var x = -len / 2 + i * (cw + gap);
+        bodyCar(x, -h * 0.9, cw, h * 1.8, 3, color, load); windows(x + 2, x + cw - 2, h * 0.7, 2);
+      }
+      ctx.fillStyle = '#17181a'; for (i = 1; i < parts; i++) ctx.fillRect(-len / 2 + i * (cw + gap) - gap, -1, gap, 2);
+      return;
+    }
+    if (mode === 'metro' || mode === 'rail' || mode === 'intercity') {
+      var cars = mode === 'metro' ? 3 : mode === 'rail' ? 3 : 4, g2 = 1.5, w2 = (len - g2 * (cars - 1)) / cars;
+      for (i = 0; i < cars; i++) {
+        var x0 = -len / 2 + i * (w2 + g2), nose = i === cars - 1 && mode === 'intercity';
+        if (nose) {
+          ctx.fillStyle = '#F2F2F2'; ctx.strokeStyle = '#17181a'; ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(x0, -h * 0.9); ctx.lineTo(x0 + w2 * 0.55, -h * 0.9); ctx.quadraticCurveTo(x0 + w2 * 1.35, -h * 0.7, x0 + w2 * 1.35, 0);
+          ctx.quadraticCurveTo(x0 + w2 * 1.35, h * 0.7, x0 + w2 * 0.55, h * 0.9); ctx.lineTo(x0, h * 0.9); ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.globalAlpha = 0.3 + 0.7 * load; ctx.fillStyle = color; ctx.fillRect(x0 + 1.5, -h * 0.55, w2 * 0.8, h * 1.1); ctx.globalAlpha = 1;
+          ctx.fillStyle = 'rgba(15,20,26,0.78)'; ctx.fillRect(x0 + w2 * 0.8, -h * 0.35, w2 * 0.35, h * 0.7);
+        } else { bodyCar(x0, -h * 0.9, w2, h * 1.8, 2.5, color, load); windows(x0 + 1.5, x0 + w2 - 1.5, h * 0.6, mode === 'metro' ? 2 : 3); }
+      }
+      return;
+    }
+    // bus and coach: a rounded body, side windows and a windscreen
+    var big = mode === 'coach';
+    bodyCar(-len / 2, -h * 0.95, len, h * 1.9, 4, color, load);
+    windows(-len / 2 + 3, len / 2 - len * 0.2, h * 0.75, big ? 5 : 3);
+    ctx.fillStyle = 'rgba(15,20,26,0.85)'; ctx.fillRect(len / 2 - len * 0.17, -h * 0.7, len * 0.12, h * 1.4);
   }
 
   function roundRect(x, y, w, h, r) {
@@ -267,7 +356,7 @@
     if (g && g.base.length >= 2) {
       prevDir = front ? R.unit(g.base[1], g.base[0]) : R.unit(g.base[g.base.length - 2], g.base[g.base.length - 1]);
     }
-    var seg = R.routeSegment(from, target, prevDir, false);
+    var seg = R.routeSegment(from, target, prevDir, false, !!MODES[L.mode].straight);
     strokePath(seg, lineWidth(), L.color + '99', [10, 8]);
     var p = toScreen(target);
     ctx.beginPath(); ctx.arc(p.x, p.y, stationRadius(), 0, 6.283);
@@ -280,12 +369,13 @@
     state.lines.forEach(function (L) {
       L.stations.forEach(function (id) { perStation.set(id, (perStation.get(id) || 0) + 1); });
     });
-    var showNames = V.s >= 0.9;
+    var showNames = ui.view.names && V.s >= 0.9, vis = shownStations();
     var editEnds = null, eL = ui.editing ? S.lineById(state, ui.editing) : null;
     if (eL && eL.stations.length) editEnds = { color: eL.color, ids: [eL.stations[0], eL.stations[eL.stations.length - 1]] };
     state.stations.forEach(function (s) {
       var p = toScreen(s);
       if (p.x < -40 || p.y < -40 || p.x > V.w + 40 || p.y > V.h + 40) return;
+      if (!stationVisible(vis, s.id)) return;
       var n = perStation.get(s.id) || 0;
       var r = n > 1 ? r0 * 1.35 : r0;
       if (ui.selStation === s.id) {
@@ -303,7 +393,7 @@
       ctx.strokeStyle = n ? '#F2F2F2' : '#8a8f95';
       if (!n) ctx.setLineDash([3, 3]);
       ctx.stroke(); ctx.setLineDash([]);
-      var w = state.stats && state.stats.waiting[s.id];
+      var w = ui.view.waiting && state.stats && state.stats.waiting[s.id];
       if (w) {
         var pips = Math.min(8, Math.ceil(w / 30));
         for (var i = 0; i < pips; i++) {
@@ -347,8 +437,9 @@
   /* ---------- hit testing ---------- */
   function stationAt(cp) {
     if (!state) return null;
-    var best = null, bd = 26;
+    var best = null, bd = 26, vis = shownStations();
     state.stations.forEach(function (s) {
+      if (!stationVisible(vis, s.id)) return;
       var p = toScreen(s), d = Math.hypot(p.x - cp.x, p.y - cp.y);
       if (d < bd) { bd = d; best = s; }
     });
@@ -363,7 +454,7 @@
   function lineHit(g) {
     var best = null, bd = 12 / V.s;
     state.lines.forEach(function (L) {
-      var gf = gfx.get(L.id); if (!gf || gf.path.length < 2) return;
+      var gf = gfx.get(L.id); if (!gf || gf.path.length < 2 || !lineShown(L)) return;
       var d = R.distToPath(gf.path, g); if (d < bd) { bd = d; best = L.id; }
     });
     return best;
@@ -384,6 +475,7 @@
     if (hit) return selectStation(hit.id);
     if (ui.selLine) {
       var idx = segmentHit(ui.selLine, g);
+      if (idx >= 0 && MODES[S.lineById(state, ui.selLine).mode].straight) { toast('Flights always go straight'); return; }
       if (idx >= 0) { S.toggleFlip(state, ui.selLine, idx); toast('Bend flipped'); afterChange(); return; }
     }
     var lid = lineHit(g);
@@ -562,7 +654,7 @@
       dockBtn('demand', ICON.eye, 'Demand', ui.showDemand) +
       dockBtn('goals', ICON.flag, 'Goals', ui.sheet === 'goals') +
       dockBtn('stats', ICON.chart, 'Stats', ui.sheet === 'stats') +
-      dockBtn('save', ICON.save, 'Save', ui.sheet === 'save');
+      dockBtn('save', ICON.gear, 'Menu', ui.sheet === 'save');
   }
   function dockBtn(act, icon, label, on) {
     return '<button type="button" class="dockbtn" data-dock="' + act + '" aria-pressed="' + on + '">' + icon + '<span>' + label + '</span></button>';
@@ -617,8 +709,32 @@
   }
 
   function clockTime(t) { var d = new Date(t); return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); }
+  function toggleRow(key, label, hint, on, modeKey) {
+    return '<button type="button" class="toggle" data-act="set" data-key="' + key + '"' + (modeKey ? ' data-mode="' + modeKey + '"' : '') + ' aria-pressed="' + on + '">' +
+      '<span class="tgtxt"><b>' + label + '</b>' + (hint ? '<span class="muted small">' + hint + '</span>' : '') + '</span><span class="sw"><i></i></span></button>';
+  }
+  function viewSettingsHtml() {
+    var v = ui.view;
+    var h = '<div class="muted small"><b>Show on the map</b></div><div class="togglelist">' +
+      toggleRow('demand', 'Homes and jobs', 'Orange and blue blobs', ui.showDemand) +
+      toggleRow('chunks', 'Loaded areas', 'Dashed outlines and darkened areas', v.chunks) +
+      toggleRow('waiting', 'Waiting passengers', 'Orange dots around stations', v.waiting) +
+      toggleRow('names', 'Station names', 'Shown when zoomed in', v.names) +
+      toggleRow('vehicles', 'Vehicles', 'The moving buses, trains and so on', v.vehicles) +
+      toggleRow('markers', 'Goals and events', 'Gold goal rings, green rush rings, closures', v.markers) +
+      '</div>';
+    var present = S.MODE_ORDER.filter(function (k) { return state.lines.some(function (L) { return L.mode === k; }); });
+    if (present.length > 1) {
+      h += '<div class="muted small"><b>Lines by mode</b> (hidden lines still run and earn money)</div><div class="togglelist">';
+      present.forEach(function (k) { h += toggleRow('mode', MODES[k].name + ' lines', '', !v.hide[k], k); });
+      h += '</div>';
+    }
+    return h;
+  }
   function sheetSave() {
-    var h = head('Save and backup', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
+    var h = head('Menu', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
+    h += viewSettingsHtml();
+    h += '<div class="muted small"><b>Save and backup</b></div>';
     h += '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
       '<button type="button" class="btn big" data-act="import">Load backup file…</button>' +
       '<div class="muted small">A backup file lets you keep a copy or move the game to another device. Loading one replaces the game you are playing now.</div>' +
@@ -781,6 +897,33 @@
   }
 
   /* ---------- the lines list: search, sort and filters ---------- */
+  /* ---------- what is shown on the map (Menu > Show on the map) ---------- */
+  var VIEW_KEY = 'transit-game-view';
+  function loadView() {
+    try {
+      var o = JSON.parse(window.localStorage.getItem(VIEW_KEY) || 'null');
+      if (!o) return;
+      ['waiting', 'names', 'vehicles', 'markers', 'chunks'].forEach(function (k) { if (o[k] === false) ui.view[k] = false; });
+      if (o.hide && typeof o.hide === 'object') ui.view.hide = o.hide;
+      if (o.demand === false) ui.showDemand = false;
+    } catch (e) { /* ignore */ }
+  }
+  function saveView() {
+    try { window.localStorage.setItem(VIEW_KEY, JSON.stringify({ waiting: ui.view.waiting, names: ui.view.names, vehicles: ui.view.vehicles, markers: ui.view.markers, chunks: ui.view.chunks, hide: ui.view.hide, demand: ui.showDemand })); } catch (e) { /* ignore */ }
+  }
+  function lineShown(L) { return !ui.view.hide[L.mode]; }
+  /* A station is hidden only when every line through it is hidden. Stations with no line stay visible. */
+  function shownStations() {
+    var any = Object.keys(ui.view.hide).some(function (k) { return ui.view.hide[k]; });
+    if (!any) return null;
+    var seen = new Map();
+    state.lines.forEach(function (L) {
+      L.stations.forEach(function (id) { seen.set(id, (seen.get(id) || false) || lineShown(L)); });
+    });
+    return seen;   // id -> true when at least one visible line serves it; ids without any line are absent
+  }
+  function stationVisible(map, id) { return !map || !map.has(id) || map.get(id); }
+
   var LV_KEY = 'transit-game-linesview';
   var SORTS = [['new', 'Oldest first'], ['newest', 'Newest first'], ['name', 'Name A to Z'], ['profit', 'Profit, high to low'], ['profitlow', 'Profit, low to high'],
     ['riders', 'Most riders'], ['load', 'Most crowded'], ['stops', 'Most stops'], ['length', 'Longest'], ['vehicles', 'Most vehicles']];
@@ -887,7 +1030,7 @@
       var m = MODES[k], open = S.isUnlocked(state, k);
       h += '<button type="button" class="card modecard' + (open ? '' : ' locked') + '" data-act="mode" data-mode="' + k + '"' + (open ? '' : ' disabled') + '>' +
         '<span class="lrow"><b>' + m.name + '</b><span class="grow"></span><span class="muted">' + (open ? m.speed + ' km/h · ' + m.cap + ' seats' : m.soon ? 'Coming soon' : 'Locked') + '</span></span>' +
-        '<span class="muted">' + (open ? 'Track ' + fmt(m.trackKm) + '/km · stop ' + fmt(m.platform) + ' · vehicle ' + fmt(m.vehicle) + ' · stops at least ' + m.minSpacingM + ' m apart'
+        '<span class="muted">' + (open ? (m.straight ? 'Route ' : 'Track ') + fmt(m.trackKm) + '/km · stop ' + fmt(m.platform) + ' · vehicle ' + fmt(m.vehicle) + ' · stops at least ' + (m.minSpacingM >= 1000 ? (m.minSpacingM / 1000) + ' km' : m.minSpacingM + ' m') + ' apart'
           : m.soon ? m.soon : 'Unlocks at ' + num(m.unlockPax) + ' total passengers (' + num(state.lifetimePax) + ' so far)') + '</span></button>';
     });
     return h;
@@ -917,7 +1060,7 @@
       '<button type="button" class="btn" data-act="rename">Rename</button>' +
       '<button type="button" class="btn" data-act="reverse">Reverse</button>' +
       '<button type="button" class="btn danger" data-act="delete">Delete</button></div>';
-    h += '<p class="muted small tip">Tip: tap a segment of this line on the map to flip its bend.</p>';
+    h += MODES[L.mode].straight ? '<p class="muted small tip">Planes fly in a straight line between airports.</p>' : '<p class="muted small tip">Tip: tap a segment of this line on the map to flip its bend.</p>';
     return h;
   }
 
@@ -942,6 +1085,13 @@
     var act = t.getAttribute('data-act'), id = +t.getAttribute('data-id');
     var res;
     switch (act) {
+      case 'set': {
+        var key = t.getAttribute('data-key');
+        if (key === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; }
+        else if (key === 'mode') { var mk = t.getAttribute('data-mode'); if (ui.view.hide[mk]) delete ui.view.hide[mk]; else ui.view.hide[mk] = true; if (ui.selLine && ui.view.hide[(S.lineById(state, ui.selLine) || {}).mode]) ui.selLine = null; }
+        else ui.view[key] = !ui.view[key];
+        saveView(); renderSheet(); renderDock(); break;
+      }
       case 'close': ui.renaming = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
@@ -1340,6 +1490,7 @@
   }
 
   function init() {
+    loadView();
     map = L.map('map', {
       zoomControl: false, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 100,
       zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false,
@@ -1380,7 +1531,7 @@
       if (a === 'move') { ui.tool = 'move'; if (ui.editing) finishEditing(); ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); }
       else if (a === 'station') setTool('station');
       else if (a === 'lines') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'lines' ? 'none' : 'lines'; ui.selStation = null; renderSheet(); renderDock(); }
-      else if (a === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; renderDock(); }
+      else if (a === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; saveView(); renderDock(); }
       else if (a === 'goals') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'goals' ? 'none' : 'goals'; ui.selLine = null; ui.selStation = null; ui.renaming = false; if (ui.sheet === 'goals') ui.goalsSeen = true; renderSheet(); renderDock(); }
       else if (a === 'stats') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'stats' ? 'none' : 'stats'; ui.selLine = null; ui.selStation = null; ui.renaming = false; renderSheet(); renderDock(); }
       else if (a === 'save') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'save' ? 'none' : 'save'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); if (ui.sheet === 'save') loadSnapshotList().then(function () { if (ui.sheet === 'save') renderSheet(); }); }
@@ -1423,5 +1574,17 @@
   }
 
   window.addEventListener('load', init);
-  window.TG = { get state() { return state; }, ui: ui, get gfx() { return gfx; }, get map() { return map; } };
+  /* test helper: draws every vehicle shape big on a given canvas */
+  function shapeSheet(c) {
+    var old = ctx, modes = ['bus', 'coach', 'tram', 'lightrail', 'metro', 'rail', 'intercity', 'ferry', 'plane'];
+    ctx = c.getContext('2d'); ctx.fillStyle = '#222'; ctx.fillRect(0, 0, c.width, c.height);
+    modes.forEach(function (m, i) {
+      ctx.save(); ctx.translate(c.width / 2, 40 + i * 70); ctx.scale(2.5, 2.5);
+      drawVehicleShape(m, 9 * (MODES[m].vlen || 2.8), 9 * 1.3, '#1E88E5', 0.7);
+      ctx.restore();
+      ctx.fillStyle = '#ccc'; ctx.font = '14px sans-serif'; ctx.fillText(m, 10, 45 + i * 70);
+    });
+    ctx = old;
+  }
+  window.TG = { shapeSheet: shapeSheet, get state() { return state; }, ui: ui, get gfx() { return gfx; }, get map() { return map; } };
 })();

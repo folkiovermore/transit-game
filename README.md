@@ -15,8 +15,10 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 - Tap a segment of the selected line to flip its bend.
 - **Station** tool places stand-alone stations. **Demand** shows homes (orange) and jobs (blue).
 - **Lines list:** search by name, sort (oldest, newest, name, profit, riders, most crowded, stops, length, vehicles), filter by mode, by country (taken from the stop names, so stops not named yet show as "Country not known yet") and by status (crowded, overloaded, losing money, nearly empty, hit by an event, unfinished). Sort and filters are remembered in this browser, search is not.
+- **Look:** homes and jobs are drawn as a heat map (soft orange and blue glows that add up where blocks overlap). Every mode has its own vehicle shape: bus, coach, 2-car tram, 3-car light rail, metro and commuter rail trains, intercity train with a nose, ferry and plane. The coloured fill gets stronger as a vehicle fills up. `drawVehicleShape` in `js/game.js`; `TG.shapeSheet(canvas)` draws all shapes for checking.
+- **Menu** (bottom bar, last button): switches for what is drawn on the map (homes and jobs, loaded areas, waiting passengers, station names, vehicles, goal and event markers) and one switch per mode in your network to hide its lines and stops (hidden lines still run and earn money). Nothing switches automatically, and the choices are remembered in this browser (`transit-game-view`). Save and backup sit below the switches.
 - **Rename** a line from its panel. **Stats** (bottom bar) shows balance, riders, profit, how much of the population and jobs lie near a stop, history charts, lines ranked by profit and the stops where most people are left behind.
-- **Save** (bottom bar) downloads a backup file or loads one. The start screen can also load a backup.
+- **Save and backup** (in the Menu) downloads a backup file or loads one. The start screen can also load a backup.
 - A scale bar sits bottom left. With Demand on, a legend explains the dots (orange homes, blue jobs, bigger means more) and the loaded and unloaded areas. Close it with the ×.
 - Keyboard: Space pauses, Esc cancels.
 - Stops can be close together: 40 m apart at minimum, and consecutive stops on a line at least 40 m (bus), 100 m (tram), 300 m (metro and light rail) or 1,200 m (commuter rail).
@@ -93,6 +95,8 @@ Not verified: the live Overpass requests (start and panning). It was tested only
 ## Transport modes (phase 1)
 - Bus, Tram, **Light rail** (unlock 50,000 total passengers), Commuter rail (100,000), Metro (300,000), **Intercity rail** (1,500,000, 160 km/h, stops at least 8 km apart).
 - **Ferry** (unlock 40,000, 25 km/h, cheap track) is playable, but the game does not know where water is: you place ferry stops on water or shore yourself, and any line can still cross water for free. A real water map (OSM water polygons, coastlines, bridges) enforcing this is a possible phase 2.
+- **Coach** (unlock 75,000 total passengers, 70 km/h, 50 seats, stops at least 5 km apart): cheap long-distance road service between towns. Fares and costs are close to bus levels, so it earns mostly from trips of 25 km or more.
+- **Plane** (unlock 3,000,000 total passengers, 650 km/h, 180 seats): stops are airports at least 150 km apart. Flights are drawn as dashed straight lines (no 45° bends, not bundled with other lines, no bend flipping). Airports (20M each, 15k/day) and planes (15M, 60k/day) are expensive, the route itself costs almost nothing (3k/km), and fares are 20% of the normal per-km fare (`fareMult` in `MODES.plane`), so planes are a late-game investment that pays back in roughly 50 days on a busy route. Straight lengths come from `edgeLenFor` in `js/sim.js`; `MODES.<mode>.straight` switches routing and distances.
 - **Long-distance demand**: trips of 25 km or more between far-apart places appear once stations exist at both ends. Existing mode economics are unchanged.
 
 
