@@ -148,10 +148,12 @@
     return out;
   }
   function nearestReach(b, reach) {
-    var best = null, bd = Infinity;
+    var best = null, bd = Infinity, bxx = b.x, byy = b.y;
     for (var i = 0; i < reach.length; i++) {
-      var d = Math.hypot(b.x - reach[i].x, b.y - reach[i].y);
-      if (d <= reach[i].r && d < bd) { bd = d; best = reach[i].id; }
+      var R = reach[i], dx = bxx - R.x, dy = byy - R.y;
+      if (dx > R.r || dx < -R.r || dy > R.r || dy < -R.r) continue;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d <= R.r && d < bd) { bd = d; best = R.id; }
     }
     return best;
   }
@@ -223,36 +225,55 @@
     var od = new Map();
     var D0c = BAL.gravityM / state.mpp;                 // grid size only; the exact scale is worked out per origin
     var potential = 0, captured = 0;
-    var CELL = D0c * 1.5, grid = new Map();
-    state.blocks.forEach(function (b, i) {
-      if (!(b.jobs > 0)) return;
-      var k = Math.floor(b.x / CELL) + ',' + Math.floor(b.y / CELL);
+    var CELL = D0c * 1.5, grid = new Map(), NB = state.blocks.length;
+    // flat arrays and numeric keys keep this loop fast; it is the most expensive part of the day
+    var bx = new Float64Array(NB), by = new Float64Array(NB), bjw = new Float64Array(NB), bst = new Int32Array(NB);
+    var stIdx = new Map(), stIds = [];
+    for (var hi0 = 0; hi0 < NB; hi0++) {
+      var bb = state.blocks[hi0];
+      bx[hi0] = bb.x; by[hi0] = bb.y; bjw[hi0] = bb.jobs * spotMult[hi0];
+      var hs = homeSt[hi0];
+      if (hs === null) bst[hi0] = -1;
+      else { var si0 = stIdx.get(hs); if (si0 === undefined) { si0 = stIds.length; stIdx.set(hs, si0); stIds.push(hs); } bst[hi0] = si0; }
+      if (!(bb.jobs > 0)) continue;
+      var k = (Math.floor(bb.x / CELL) + 200000) * 400009 + (Math.floor(bb.y / CELL) + 200000);
       var g = grid.get(k); if (!g) { g = []; grid.set(k, g); }
-      g.push(i);
-    });
+      g.push(hi0);
+    }
+    var nearIdx = new Int32Array(NB), nearW = new Float64Array(NB);
+    var acc = new Float64Array(stIds.length), touched = new Int32Array(stIds.length);
     state.blocks.forEach(function (h, hi) {
       var trips = h.pop * BAL.tripRate * fx.demand * spotMult[hi];
       potential += trips;
       var so = homeSt[hi];
       if (so === null) return;
-      var D0 = BAL.gravityM / mScale(state, h.y);
-      var cx = Math.floor(h.x / CELL), cy = Math.floor(h.y / CELL), near = [], wsum = 0;
+      var D0 = BAL.gravityM / mScale(state, h.y), invD0 = 1 / D0, hx = h.x, hy = h.y;
+      var cx = Math.floor(hx / CELL), cy = Math.floor(hy / CELL), nn = 0, wsum = 0;
       for (var gx = cx - 4; gx <= cx + 4; gx++) for (var gy = cy - 4; gy <= cy + 4; gy++) {
-        var cell = grid.get(gx + ',' + gy);
+        // skip cells so far away that their weight is below 0.3% of a block next door
+        var ddx = gx * CELL > hx ? gx * CELL - hx : ((gx + 1) * CELL < hx ? hx - (gx + 1) * CELL : 0);
+        var ddy = gy * CELL > hy ? gy * CELL - hy : ((gy + 1) * CELL < hy ? hy - (gy + 1) * CELL : 0);
+        if ((ddx * ddx + ddy * ddy) * invD0 * invD0 > 36) continue;
+        var cell = grid.get((gx + 200000) * 400009 + (gy + 200000));
         if (!cell) continue;
         for (var q = 0; q < cell.length; q++) {
-          var bj = state.blocks[cell[q]];
-          var w = bj.jobs * spotMult[cell[q]] * Math.exp(-Math.hypot(h.x - bj.x, h.y - bj.y) / D0);
-          wsum += w; near.push(cell[q], w);
+          var j = cell[q], dx = hx - bx[j], dy = hy - by[j];
+          var w = bjw[j] * Math.exp(-Math.sqrt(dx * dx + dy * dy) * invD0);
+          wsum += w; nearIdx[nn] = j; nearW[nn] = w; nn++;
         }
       }
       if (wsum <= 0) return;
-      for (var n = 0; n < near.length; n += 2) {
-        var sd = homeSt[near[n]];
-        if (sd === null || sd === so) continue;
-        var t = trips * near[n + 1] / wsum;
-        var key = so + '|' + sd;
-        od.set(key, (od.get(key) || 0) + t);
+      var soI = stIdx.get(so), nt = 0, scale = trips / wsum;
+      for (var n = 0; n < nn; n++) {
+        var sdI = bst[nearIdx[n]];
+        if (sdI < 0 || sdI === soI) continue;
+        if (acc[sdI] === 0) touched[nt++] = sdI;
+        acc[sdI] += nearW[n];
+      }
+      for (var u = 0; u < nt; u++) {
+        var sI = touched[u], key = so + '|' + stIds[sI];
+        od.set(key, (od.get(key) || 0) + acc[sI] * scale);
+        acc[sI] = 0;
       }
     });
 
@@ -434,6 +455,7 @@
     stats.cost += state.stations.length * BAL.stationDay;
     stats.profit = stats.revenue - stats.cost;
     stats.captured = captured;
+    stats._day = state.day; stats._nb = state.blocks.length; stats._nl = state.lines.length;
     return stats;
   }
 
@@ -462,7 +484,8 @@
 
   function endDay(state) {
     var events = [];
-    var stats = computeNetwork(state);
+    // the numbers were already worked out after the last change; do not repeat the heavy calculation unless something moved
+    var stats = state.stats && state.stats._day === state.day && state.stats._nb === state.blocks.length && state.stats._nl === state.lines.length ? state.stats : computeNetwork(state);
     state.balance += stats.profit;
     state.lifetimePax += stats.riders;
     state.history.push({ day: state.day, riders: Math.round(stats.riders), profit: Math.round(stats.profit), balance: Math.round(state.balance) });
@@ -615,6 +638,23 @@
     return { ok: true };
   }
 
+  // set the fleet to an exact number: buys what you can afford, sells down at half price
+  function setVehicleCount(state, lineId, target) {
+    var line = lineById(state, lineId);
+    if (!line || line.stations.length < 2) return { ok: false, msg: 'Add at least two stops first' };
+    target = Math.floor(+target);
+    if (!isFinite(target)) return { ok: false, msg: 'Type a number' };
+    var wanted = target;
+    target = Math.max(1, Math.min(BAL.maxVehicles, target));
+    var msg = wanted > BAL.maxVehicles ? 'Maximum of ' + BAL.maxVehicles + ' vehicles' : '';
+    while (line.vehicles < target) {
+      var r = setVehicles(state, lineId, 1);
+      if (!r.ok) { msg = 'Only ' + line.vehicles + ' now: ' + r.msg; break; }
+    }
+    while (line.vehicles > target) setVehicles(state, lineId, -1);
+    return { ok: true, msg: msg, count: line.vehicles };
+  }
+
   function deleteLine(state, lineId) {
     var line = lineById(state, lineId);
     if (!line) return { ok: false };
@@ -643,7 +683,7 @@
     coverage: coverage, mScale: mScale, edgeM: edgeM, lineLenM: lineLenM, MODES: MODES, MODE_ORDER: MODE_ORDER, BAL: BAL, COLORS: COLORS,
     newState: newState, computeNetwork: computeNetwork, endDay: endDay, isUnlocked: isUnlocked,
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
-    undoLastStop: undoLastStop, setVehicles: setVehicles, deleteLine: deleteLine, reverseLine: reverseLine,
+    undoLastStop: undoLastStop, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
     toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx, edgeLenFor: edgeLenFor,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
     fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx

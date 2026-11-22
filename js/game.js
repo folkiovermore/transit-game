@@ -689,6 +689,7 @@
   function renderSheet() {
     var el = $('sheet');
     if (ui.renaming && ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'lineNameInput') return;
+    if (ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'vehInput') return;
     if (ui.renamingStation && ui.sheet === 'station' && document.activeElement && document.activeElement.id === 'stationNameInput') return;
     if (!state || ui.sheet === 'none' || ui.editing) { el.className = 'sheet hidden'; el.innerHTML = ''; return; }
     el.className = 'sheet';
@@ -1055,7 +1056,7 @@
       '<div><b>' + num(lc.popReached) + '</b><span>residents near stops</span></div>' +
       '<div><b>' + num(lc.jobsReached) + '</b><span>jobs near stops</span></div></div>';
     h += '<div class="stepper"><span><b>Vehicles</b> <span class="muted">(' + fmt(m.vehicle) + ' each)</span></span><span class="grow"></span>' +
-      '<button type="button" class="round" data-act="vminus" aria-label="Sell a vehicle">−</button><b class="vnum">' + L.vehicles + '</b>' +
+      '<button type="button" class="round" data-act="vminus" aria-label="Sell a vehicle">−</button><input id="vehInput" class="vinput" type="number" inputmode="numeric" min="1" max="' + S.BAL.maxVehicles + '" value="' + L.vehicles + '" aria-label="Number of vehicles">' +
       '<button type="button" class="round primary" data-act="vplus" aria-label="Buy a vehicle">+</button></div>';
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="edit">Add stops</button>' +
       '<button type="button" class="btn" data-act="undo">Undo last stop</button>' +
@@ -1623,6 +1624,11 @@
 
     $('sheet').addEventListener('click', onSheetClick);
     $('sheet').addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'vehInput' && state && ui.selLine) {
+        var vr = S.setVehicleCount(state, ui.selLine, e.target.value);
+        if (!vr.ok) toast(vr.msg); else if (vr.msg) toast(vr.msg);
+        e.target.blur(); afterChange(); renderSheet(); return;
+      }
       var k = e.target && e.target.getAttribute && e.target.getAttribute('data-lv');
       if (!k || !state) return;
       lv()[k] = e.target.value; saveLv(); renderSheet();
@@ -1634,6 +1640,7 @@
     });
     $('sheet').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && e.target.id === 'stationNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=ssave]') }); }
+      if (e.key === 'Enter' && e.target.id === 'vehInput') { e.preventDefault(); e.target.blur(); }
       if (e.key === 'Enter' && e.target.id === 'lineNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=saverename]') }); }
     });
     $('banner').addEventListener('click', onSheetClick);
