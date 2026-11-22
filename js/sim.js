@@ -14,7 +14,7 @@
   MODES.intercity = { name: 'Intercity rail', speed: 160, cap: 700, trackKm: 1200000, platform: 800000, vehicle: 4000000, vehicleDay: 2500, maintKmDay: 100, minSpacingM: 8000, dwellMin: 4, catchM: 1500, unlockPax: 1500000 };
   MODES.ferry = { name: 'Ferry', speed: 25, cap: 300, trackKm: 150000, platform: 300000, vehicle: 1500000, vehicleDay: 700, maintKmDay: 20, minSpacingM: 500, dwellMin: 3, catchM: 700, unlockPax: 40000 };
   MODES.coach = { name: 'Coach', speed: 70, cap: 50, trackKm: 120000, platform: 40000, vehicle: 260000, vehicleDay: 420, maintKmDay: 25, minSpacingM: 5000, dwellMin: 6, catchM: 1000, unlockPax: 75000 };
-  MODES.plane = { name: 'Plane', speed: 650, cap: 180, trackKm: 3000, platform: 20000000, platDay: 15000, vehicle: 15000000, vehicleDay: 60000, fareMult: 0.2, maintKmDay: 0, minSpacingM: 150000, dwellMin: 35, catchM: 4000, unlockPax: 3000000, straight: true };
+  MODES.plane = { name: 'Plane', speed: 650, cap: 180, trackKm: 3000, platform: 20000000, platDay: 15000, vehicle: 15000000, vehicleDay: 60000, fareMult: 0.2, maintKmDay: 0, minSpacingM: 150000, dwellMin: 35, catchM: 25000, unlockPax: 3000000, straight: true };
   MODES.bus.vlen = 1.7; MODES.coach.vlen = 2.4; MODES.plane.vlen = 3.4; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
   var MODE_ORDER = ['bus', 'tram', 'lightrail', 'coach', 'rail', 'metro', 'intercity', 'ferry', 'plane'];
 
@@ -33,7 +33,7 @@
     transferMin: 5,
     waitMin: 4,
     minStationGapM: 40,
-    maxVehicles: 24,
+    maxVehicles: 60,
     bankruptDays: 3,
     maxBlocks: 1500,
     longRate: 0.04,            // share of residents who make a long-distance trip each day
@@ -557,7 +557,7 @@
     var line = lineById(state, lineId), m = line && MODES[line.mode];
     if (!line || line.stations.length < 2) return { ok: false, msg: 'Add at least two stops first' };
     if (delta > 0) {
-      if (line.vehicles >= BAL.maxVehicles) return { ok: false, msg: 'Maximum vehicles reached' };
+      if (line.vehicles >= BAL.maxVehicles) return { ok: false, msg: 'Maximum of ' + BAL.maxVehicles + ' vehicles reached' };
       if (state.balance < m.vehicle) return { ok: false, msg: 'Need ' + fmtMoney(m.vehicle) };
       state.balance -= m.vehicle; line.vehicles += 1;
     } else {

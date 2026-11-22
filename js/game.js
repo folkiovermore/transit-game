@@ -527,7 +527,7 @@
   }
 
   function selectStation(id) {
-    ui.selStation = id; ui.selLine = null; ui.sheet = 'station'; renderSheet(); renderDock();
+    ui.renamingStation = false; ui.selStation = id; ui.selLine = null; ui.sheet = 'station'; renderSheet(); renderDock();
   }
   function selectLine(id) {
     ui.renaming = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
@@ -689,6 +689,7 @@
   function renderSheet() {
     var el = $('sheet');
     if (ui.renaming && ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'lineNameInput') return;
+    if (ui.renamingStation && ui.sheet === 'station' && document.activeElement && document.activeElement.id === 'stationNameInput') return;
     if (!state || ui.sheet === 'none' || ui.editing) { el.className = 'sheet hidden'; el.innerHTML = ''; return; }
     el.className = 'sheet';
     var html = '';
@@ -733,6 +734,7 @@
   }
   function sheetSave() {
     var h = head('Menu', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
+    h += mapDataHtml();
     h += viewSettingsHtml();
     h += '<div class="muted small"><b>Save and backup</b></div>';
     h += '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
@@ -1075,7 +1077,11 @@
     h += '<div class="chips">' + serving.map(function (L) { return '<span class="chip"><span class="dot" style="background:' + L.color + '"></span>' + lineName(L) + '</span>'; }).join('') + '</div>';
     h += '<div class="stats"><div><b>' + num(pop) + '</b><span>residents nearby</span></div><div><b>' + num(jobs) + '</b><span>jobs nearby</span></div>' +
       '<div><b>' + num(waiting) + '</b><span>left behind / day</span></div></div>';
+    if (ui.renamingStation) {
+      h += '<div class="renamerow"><input id="stationNameInput" type="text" maxlength="28" placeholder="Station name (empty = automatic)" value="' + esc(s.name) + '" autocomplete="off"><button type="button" class="btn primary" data-act="ssave">Save</button><button type="button" class="btn" data-act="scancel">Cancel</button></div>';
+    }
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="linefrom">New line from here</button>' +
+      '<button type="button" class="btn" data-act="srename">Rename</button>' +
       (serving.length ? '' : '<button type="button" class="btn danger" data-act="rmstation">Remove station</button>') + '</div>';
     return h;
   }
@@ -1085,6 +1091,7 @@
     var act = t.getAttribute('data-act'), id = +t.getAttribute('data-id');
     var res;
     switch (act) {
+      case 'bulkload': bulk.on = !bulk.on; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
       case 'set': {
         var key = t.getAttribute('data-key');
         if (key === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; }
@@ -1092,7 +1099,7 @@
         else ui.view[key] = !ui.view[key];
         saveView(); renderSheet(); renderDock(); break;
       }
-      case 'close': ui.renaming = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
+      case 'close': ui.renaming = false; ui.renamingStation = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
       case 'clearlv': lv().mode = 'all'; lv().status = 'all'; lv().country = 'all'; lv().q = ''; saveLv(); renderSheet(); break;
@@ -1108,6 +1115,17 @@
         break;
       }
       case 'rename': ui.renaming = true; renderSheet(); setTimeout(function () { var i = $('lineNameInput'); if (i) { i.focus(); i.select(); } }, 30); break;
+      case 'srename': ui.renamingStation = true; renderSheet(); setTimeout(function () { var i = $('stationNameInput'); if (i) { i.focus(); i.select(); } }, 30); break;
+      case 'scancel': ui.renamingStation = false; renderSheet(); break;
+      case 'ssave': {
+        var si = $('stationNameInput'), st2 = S.stationMap(state).get(ui.selStation);
+        if (st2 && si) {
+          var nm2 = si.value.trim().slice(0, 28);
+          if (nm2) { st2.name = nm2; st2.named = true; st2.custom = true; }
+          else { st2.custom = false; st2.named = false; st2.name = 'Stop ' + st2.id; queueName(st2.id); }   // back to the automatic street name
+        }
+        ui.renamingStation = false; renderSheet(); scheduleSave(); break;
+      }
       case 'cancelrename': ui.renaming = false; renderSheet(); break;
       case 'saverename':
         var li = $('lineNameInput'), ln = S.lineById(state, ui.selLine);
@@ -1212,7 +1230,7 @@
     relayout(); state.stats = S.computeNetwork(state);
     if (window.TGGoals) { TGGoals.ensure(state); TGGoals.check(state); }
     updateHud(); renderDock(); renderSheet(); renderBanner();
-    state.stations.forEach(function (x) { if (x.named && /^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(x.name).trim())) { x.named = false; x.name = 'Stop ' + x.id; } });
+    state.stations.forEach(function (x) { if (x.named && !x.custom && /^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(x.name).trim())) { x.named = false; x.name = 'Stop ' + x.id; } });
     nameQueue = []; queueUnnamed();
     upgradeOldSave(state);
     setTimeout(ensureView, 2500);
@@ -1302,6 +1320,54 @@
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
   var chunkBusy = false, chunkFailed = {}, chunkTimer = null, LOAD_ZOOM = 13;
+  var bulk = { on: false, left: 0 }, loadingKey = null;
+
+  /* Which map areas (chunks) the network needs: everything within reach of a stop on a working line. */
+  function needInfo() {
+    var sMap = S.stationMap(state), radius = {}, per = [], all = {};
+    state.lines.forEach(function (Ln) {
+      if (Ln.stations.length < 2) return;
+      var r = MODES[Ln.mode].catchM;
+      Ln.stations.forEach(function (id) { if (!radius[id] || radius[id] < r) radius[id] = r; });
+    });
+    Object.keys(radius).forEach(function (id) {
+      var st = sMap.get(+id); if (!st) return;
+      var ll = map.unproject(L.point(centerPx.x + st.x, centerPx.y + st.y), Z);
+      var ks = TGOsm.chunksIn(TGOsm.bboxFor(ll.lat, ll.lng, radius[id]));
+      var miss = ks.filter(function (k) { return !(state.chunks && state.chunks[k]); });
+      ks.forEach(function (k) { all[k] = 1; });
+      per.push({ name: st.name, total: ks.length, missing: miss.length });
+    });
+    var keys = Object.keys(all), missing = keys.filter(function (k) { return !(state.chunks && state.chunks[k]); });
+    per = per.filter(function (x) { return x.missing > 0; }).sort(function (a, b) { return b.missing - a.missing; });
+    return { total: keys.length, missing: missing, per: per };
+  }
+  function nearestStationName(key) {
+    var b = TGOsm.chunkBox(key), p = projFn((b.s + b.n) / 2, (b.w + b.e) / 2), best = null, bd = Infinity;
+    state.stations.forEach(function (st) { var d = Math.hypot(st.x - p.x, st.y - p.y); if (d < bd) { bd = d; best = st; } });
+    return best ? best.name : 'the map';
+  }
+  function mapDataHtml() {
+    if (!state || state.source !== 'osm' || !window.TGOsm || !centerPx) return '';
+    var ni = needInfo(), loaded = ni.total - ni.missing.length, now = Date.now();
+    var failed = ni.missing.filter(function (k) { return chunkFailed[k] && now - chunkFailed[k] < 90000; }).length;
+    var pct = ni.total ? Math.round(100 * loaded / ni.total) : 100;
+    var h = '<div class="muted small"><b>Map data</b> (homes and jobs)</div><div class="card mapdata">' +
+      '<span class="lrow"><b>Around your stops</b><span class="grow"></span><span class="muted">' + loaded + ' of ' + ni.total + ' areas · ' + pct + '%</span></span>' +
+      '<span class="bar"><i style="width:' + pct + '%"></i></span>';
+    if (chunkBusy && loadingKey) h += '<span class="muted">Loading now: the area near ' + esc(nearestStationName(loadingKey)) + '</span>';
+    else if (ni.missing.length && bulk.on) h += '<span class="muted">Waiting for the next area…</span>';
+    else if (!ni.missing.length) h += '<span class="muted">Everything your stops can reach is loaded.</span>';
+    else h += '<span class="muted">' + ni.missing.length + ' areas around your stops are not loaded yet. They load when you look at them, or all at once below.</span>';
+    if (failed) h += '<span class="neg small">' + failed + ' area' + (failed > 1 ? 's' : '') + ' failed and will be tried again soon.</span>';
+    if (ni.per.length) {
+      h += '<span class="muted small"><b>Missing data near</b></span>';
+      ni.per.slice(0, 6).forEach(function (x) { h += '<span class="lrow small"><span>' + esc(x.name) + '</span><span class="grow"></span><span class="muted">' + (x.total - x.missing) + ' of ' + x.total + '</span></span>'; });
+      if (ni.per.length > 6) h += '<span class="muted small">and ' + (ni.per.length - 6) + ' more stops</span>';
+    }
+    if (ni.missing.length) h += '<button type="button" class="btn big ' + (bulk.on ? '' : 'primary') + '" data-act="bulkload">' + (bulk.on ? 'Stop loading' : 'Load data around my stops') + '</button>';
+    return h + '</div>';
+  }
   function worldParams() {
     return { wy0: centerPx.y, wsz: 256 * Math.pow(2, Z) };
   }
@@ -1319,12 +1385,20 @@
   }
 
   function ensureView() {
-    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm || map.getZoom() < LOAD_ZOOM) return;
+    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm) return;
     if ($('start').className.indexOf('hidden') < 0) return;
-    var bd = map.getBounds(), c = map.getCenter(), now = Date.now();
-    var keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(function (k) {
-      return !(state.chunks && state.chunks[k]) && !(chunkFailed[k] && now - chunkFailed[k] < 90000);
-    });
+    var c = map.getCenter(), now = Date.now(), keys = [];
+    function fresh(k) { return !(state.chunks && state.chunks[k]) && !(chunkFailed[k] && now - chunkFailed[k] < 90000); }
+    if (map.getZoom() >= LOAD_ZOOM) {
+      var bd = map.getBounds();
+      keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(fresh);
+    }
+    if (!keys.length && bulk.on) {
+      var ni = needInfo();
+      bulk.left = ni.missing.length;
+      keys = ni.missing.filter(fresh);
+      if (!ni.missing.length) { bulk.on = false; toast('All the data around your stops is loaded', 3500); if (ui.sheet === 'save') renderSheet(); }
+    }
     if (!keys.length) return;
     keys.sort(function (a, b) {
       function d(k) { var x = TGOsm.chunkBox(k); return Math.hypot((x.s + x.n) / 2 - c.lat, ((x.w + x.e) / 2 - c.lng) * Math.cos(c.lat * Math.PI / 180)); }
@@ -1334,8 +1408,9 @@
   }
 
   function loadChunks(keys, st) {
-    chunkBusy = true;
-    setLoadTag('Loading homes and jobs…');
+    chunkBusy = true; loadingKey = keys[0];
+    setLoadTag(bulk.on && bulk.left ? 'Loading map data, ' + bulk.left + ' areas left…' : 'Loading homes and jobs…');
+    if (ui.sheet === 'save') renderSheet();
     return fetchKeysElements(keys).then(function (els) {
       if (st !== state) return;
       var added = 0;
@@ -1352,7 +1427,8 @@
       toast('Could not load homes and jobs' + (lastLoadError ? ' (' + lastLoadError + ')' : '') + '. Will retry.', 4500);
       clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 95000);
     }).then(function () {
-      chunkBusy = false; setLoadTag('');
+      chunkBusy = false; loadingKey = null; setLoadTag('');
+      if (ui.sheet === 'save') renderSheet();
       setTimeout(ensureView, 1500);
     });
   }
@@ -1522,6 +1598,7 @@
       var box = $('lineList'); if (box) box.innerHTML = lineListHtml();
     });
     $('sheet').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.id === 'stationNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=ssave]') }); }
       if (e.key === 'Enter' && e.target.id === 'lineNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=saverename]') }); }
     });
     $('banner').addEventListener('click', onSheetClick);
