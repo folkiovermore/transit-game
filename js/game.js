@@ -775,6 +775,22 @@
   }
 
   /* ---------- boot ---------- */
+  /* Map tiles. With a free CARTO key we get the real dark map. Without one we use plain OpenStreetMap tiles
+   * and darken them with a CSS filter, so the game still works. */
+  var TILE_KEY = 'transit-game-tilekey', tileLayer = null, keyTimer = null;
+  function getTileKey() { try { return (localStorage.getItem(TILE_KEY) || '').trim(); } catch (e) { return ''; } }
+  function setTiles() {
+    if (tileLayer) map.removeLayer(tileLayer);
+    var key = getTileKey();
+    document.body.classList.toggle('dimtiles', !key);
+    tileLayer = key
+      ? L.tileLayer('https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=' + encodeURIComponent(key), { maxZoom: 20, attribution: '© OpenStreetMap contributors © CARTO' })
+      : L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' });
+    tileLayer.addTo(map);
+    tileLayer.on('tileload', function () { tilesLoaded = true; });
+    tileLayer.on('tileerror', function () { tileErrors++; if (key && tileErrors === 6 && !tilesLoaded) toast('Map tiles are not loading. Check the map key.', 6000); });
+  }
+
   function init() {
     map = L.map('map', {
       zoomControl: false, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 100,
@@ -782,11 +798,7 @@
       doubleClickZoom: false, boxZoom: false, minZoom: 10, maxZoom: 18, attributionControl: true
     }).setView([53.3498, -6.2603], 14);
     map.attributionControl.setPrefix(false);
-    var tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd', maxZoom: 20, attribution: '© OpenStreetMap contributors © CARTO'
-    }).addTo(map);
-    tiles.on('tileload', function () { tilesLoaded = true; });
-    tiles.on('tileerror', function () { tileErrors++; });
+    setTiles();
     centerPx = map.project(map.getCenter(), Z);
 
     canvas = $('overlay'); ctx = canvas.getContext('2d');
@@ -819,6 +831,16 @@
     window.addEventListener('pagehide', save);
     document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
 
+    $('tileKey').value = getTileKey();
+    function applyKey() {
+      var v = $('tileKey').value.trim();
+      try { localStorage.setItem(TILE_KEY, v); } catch (e) { /* ignore */ }
+      tileErrors = 0; tilesLoaded = false;
+      setTiles();
+      $('startMsg').textContent = v ? 'Map key saved. The dark map shows once you start a game.' : 'Map key removed.';
+    }
+    $('tileKey').addEventListener('change', applyKey);
+    $('tileKey').addEventListener('input', function () { clearTimeout(keyTimer); keyTimer = setTimeout(applyKey, 700); });
     $('startBtn').addEventListener('click', startFromSearch);
     $('importBtn').addEventListener('click', function () { $('importFile').click(); });
     $('importFile').addEventListener('change', function () { importSave(this.files[0]); this.value = ''; });
