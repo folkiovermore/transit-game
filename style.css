@@ -95,3 +95,12 @@ p.muted { margin: 0; line-height: 1.45; }
 }
 @media (max-width: 440px) { .dock { gap: 6px; } .dockbtn { width: 62px; } }
 body.dimtiles .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.62) contrast(0.95) saturate(0.45); }
+.loadtag { position: absolute; z-index: 11; left: 12px; bottom: calc(var(--safe-b) + 100px); padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; pointer-events: none; }
+.loadtag.hidden { display: none; }
+.renamerow { display: flex; gap: 8px; }
+.renamerow input { flex: 1; min-width: 0; }
+.chartbox { background: #2a2c2f; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.dockbtn { width: clamp(48px, calc((100vw - 52px) / 6), 76px) !important; }
+@media (max-width: 440px) { .dock { gap: 5px; } .dockbtn { font-size: 11px; } }
+.renamerow input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid #6B7076; background: #1b1d1f; color: var(--text); font-size: 16px; font-family: inherit; }
+.stats b > .pos, .stats b > .neg { font-size: inherit; } .stats b > .pos { color: var(--pos); } .stats b > .neg { color: var(--neg); }

@@ -28,7 +28,7 @@
     minStationGapPx: 24,
     maxVehicles: 24,
     bankruptDays: 3,
-    maxBlocks: 520
+    maxBlocks: 1500
   };
 
   var COLORS = ['#FFCB0D', '#E8472B', '#2A64B0', '#3DAA5B', '#F28A1E', '#9B5DE5', '#00BBF9', '#F15BB5'];
@@ -49,6 +49,13 @@
     var dmin = Math.min(adx, ady), dmax = Math.max(adx, ady);
     return dmin * Math.SQRT2 + (dmax - dmin);
   }
+  /* Metres per game pixel at a given y. The map is Web Mercator, so real distances shrink towards the poles. */
+  function mScale(state, y) {
+    if (!state.wsz) return state.mpp;
+    var n = Math.PI * (1 - 2 * (state.wy0 + y) / state.wsz);
+    return state.mpp * Math.cos(Math.atan(Math.sinh(n))) / state.cos0;
+  }
+  function edgeM(state, a, b) { return edgeLenPx(a, b) * mScale(state, (a.y + b.y) / 2); }
   function stationMap(state) {
     var m = new Map();
     state.stations.forEach(function (s) { m.set(s.id, s); });
@@ -60,9 +67,15 @@
     for (var i = 0; i < line.stations.length - 1; i++) s += edgeLenPx(sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]));
     return s;
   }
+  function lineLenM(state, line, sMap) {
+    sMap = sMap || stationMap(state);
+    var s = 0;
+    for (var i = 0; i < line.stations.length - 1; i++) s += edgeM(state, sMap.get(line.stations[i]), sMap.get(line.stations[i + 1]));
+    return s;
+  }
   function roundTripHours(state, line, sMap) {
     var m = MODES[line.mode];
-    var km = lineLenPx(state, line, sMap) * state.mpp / 1000;
+    var km = lineLenM(state, line, sMap) / 1000;
     return Math.max(0.05, 2 * km / m.speed + 2 * line.stations.length * m.dwellMin / 60);
   }
   function peakCapacity(state, line, sMap) {
@@ -71,12 +84,13 @@
   }
 
   /* ---------- state ---------- */
-  function newState(center, mpp, seed, blocks) {
+  function newState(center, mpp, seed, blocks, world) {
     var st = {
       v: 1, seed: seed | 0, day: 1, balance: BAL.startBalance, lifetimePax: 0, negDays: 0, over: false,
       center: center, mpp: mpp, nextId: 1,
-      stations: [], lines: [], blocks: [], stats: null, history: [], source: 'generated'
+      stations: [], lines: [], blocks: [], stats: null, history: [], source: 'generated', chunks: {}
     };
+    if (world) { st.wy0 = world.wy0; st.wsz = world.wsz; st.cos0 = Math.cos(center.lat * Math.PI / 180); st.popScale = world.popScale; st.jobScale = world.jobScale; }
     if (blocks && blocks.length) { st.blocks = blocks.slice(); st.source = 'osm'; }
     else genBlocks(st, 70);
     st.stats = computeNetwork(st);
@@ -104,11 +118,11 @@
     var best = new Map();
     state.lines.forEach(function (L) {
       if (L.stations.length < 2) return;
-      var rad = MODES[L.mode].catchM / state.mpp;
-      L.stations.forEach(function (id) { if (!best.has(id) || best.get(id) < rad) best.set(id, rad); });
+      var cm = MODES[L.mode].catchM;
+      L.stations.forEach(function (id) { if (!best.has(id) || best.get(id) < cm) best.set(id, cm); });
     });
     var out = [];
-    best.forEach(function (rad, id) { var s = sMap.get(id); if (s) out.push({ id: id, x: s.x, y: s.y, r: rad }); });
+    best.forEach(function (cm, id) { var s = sMap.get(id); if (s) out.push({ id: id, x: s.x, y: s.y, r: cm / mScale(state, s.y) }); });
     return out;
   }
   function nearestReach(b, reach) {
@@ -118,6 +132,16 @@
       if (d <= reach[i].r && d < bd) { bd = d; best = reach[i].id; }
     }
     return best;
+  }
+
+  /* How much of the population and the jobs lie within walking distance of a stop on a working line. */
+  function coverage(state) {
+    var reach = reachList(state), c = { pop: 0, popReached: 0, jobs: 0, jobsReached: 0 };
+    state.blocks.forEach(function (b) {
+      c.pop += b.pop; c.jobs += b.jobs;
+      if (nearestReach(b, reach) !== null) { c.popReached += b.pop; c.jobsReached += b.jobs; }
+    });
+    return c;
   }
 
   /* ---------- the daily network calculation ---------- */
@@ -145,11 +169,11 @@
     var lineInfo = new Map();
     lines.forEach(function (L) {
       var m = MODES[L.mode];
-      lineInfo.set(L.id, { line: L, peakCap: peakCapacity(state, L, sMap), lenKm: lineLenPx(state, L, sMap) * state.mpp / 1000 });
+      lineInfo.set(L.id, { line: L, peakCap: peakCapacity(state, L, sMap), lenKm: lineLenM(state, L, sMap) / 1000 });
       for (var i = 0; i < L.stations.length; i++) node(L.stations[i], L.id);
       for (var j = 0; j < L.stations.length - 1; j++) {
         var a = sMap.get(L.stations[j]), b = sMap.get(L.stations[j + 1]);
-        var km = edgeLenPx(a, b) * state.mpp / 1000;
+        var km = edgeM(state, a, b) / 1000;
         var w = km / m.speed * 60 + m.dwellMin;
         var na = node(a.id, L.id), nb = node(b.id, L.id);
         addEdge(na, nb, w, { lid: L.id, i: j, dir: 0, km: km });
@@ -166,23 +190,36 @@
     // trips between stations (gravity model between homes and jobs)
     var homeSt = state.blocks.map(function (b) { return nearestReach(b, reach); });
     var od = new Map();
-    var D0 = BAL.gravityM / state.mpp;
+    var D0c = BAL.gravityM / state.mpp;                 // grid size only; the exact scale is worked out per origin
     var potential = 0, captured = 0;
+    var CELL = D0c * 1.5, grid = new Map();
+    state.blocks.forEach(function (b, i) {
+      if (!(b.jobs > 0)) return;
+      var k = Math.floor(b.x / CELL) + ',' + Math.floor(b.y / CELL);
+      var g = grid.get(k); if (!g) { g = []; grid.set(k, g); }
+      g.push(i);
+    });
     state.blocks.forEach(function (h, hi) {
-      var wsum = 0, weights = new Array(state.blocks.length);
-      for (var j = 0; j < state.blocks.length; j++) {
-        var b = state.blocks[j];
-        var w = b.jobs * Math.exp(-Math.hypot(h.x - b.x, h.y - b.y) / D0);
-        weights[j] = w; wsum += w;
-      }
       var trips = h.pop * BAL.tripRate;
       potential += trips;
       var so = homeSt[hi];
-      if (so === null || wsum <= 0) return;
-      for (var jj = 0; jj < state.blocks.length; jj++) {
-        var sd = homeSt[jj];
+      if (so === null) return;
+      var D0 = BAL.gravityM / mScale(state, h.y);
+      var cx = Math.floor(h.x / CELL), cy = Math.floor(h.y / CELL), near = [], wsum = 0;
+      for (var gx = cx - 4; gx <= cx + 4; gx++) for (var gy = cy - 4; gy <= cy + 4; gy++) {
+        var cell = grid.get(gx + ',' + gy);
+        if (!cell) continue;
+        for (var q = 0; q < cell.length; q++) {
+          var bj = state.blocks[cell[q]];
+          var w = bj.jobs * Math.exp(-Math.hypot(h.x - bj.x, h.y - bj.y) / D0);
+          wsum += w; near.push(cell[q], w);
+        }
+      }
+      if (wsum <= 0) return;
+      for (var n = 0; n < near.length; n += 2) {
+        var sd = homeSt[near[n]];
         if (sd === null || sd === so) continue;
-        var t = trips * weights[jj] / wsum;
+        var t = trips * near[n + 1] / wsum;
         var key = so + '|' + sd;
         od.set(key, (od.get(key) || 0) + t);
       }
@@ -305,7 +342,7 @@
         state.blocks.forEach(function (b) { total += b.pop; });
         var pick = r() * total, base = state.blocks[0];
         for (var i = 0; i < state.blocks.length; i++) { pick -= state.blocks[i].pop; if (pick <= 0) { base = state.blocks[i]; break; } }
-        var ang = r() * Math.PI * 2, d = (150 + r() * 600) / state.mpp;
+        var ang = r() * Math.PI * 2, d = (150 + r() * 600) / mScale(state, base.y);
         state.blocks.push({ x: base.x + Math.cos(ang) * d, y: base.y + Math.sin(ang) * d, pop: Math.round(40 + r() * 80), jobs: Math.round(10 + r() * 60) });
       }
     }
@@ -364,12 +401,24 @@
     return { ok: true };
   }
 
+  function hslHex(h, sat, lig) {
+    var c = (1 - Math.abs(2 * lig - 1)) * sat, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = lig - c / 2, r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    function hx(v) { var t = Math.round((v + m) * 255).toString(16); return t.length < 2 ? '0' + t : t; }
+    return '#' + hx(r) + hx(g) + hx(b);
+  }
+
   function startLine(state, mode) {
     if (!isUnlocked(state, mode)) return { ok: false, msg: MODES[mode].name + ' is still locked' };
     var used = state.lines.map(function (L) { return L.color; });
     var color = COLORS.find(function (c) { return used.indexOf(c) < 0; });
-    if (!color) return { ok: false, msg: 'You have reached the maximum number of lines' };
-    var line = { id: state.nextId++, color: color, mode: mode, stations: [], flips: [], vehicles: 0 };
+    for (var hi = 0; !color; hi++) {
+      var cand = hslHex((hi * 137.508 + 20) % 360, 0.68, 0.56);
+      if (used.indexOf(cand) < 0) color = cand;
+    }
+    state.lineCount = (state.lineCount || state.lines.length) + 1;
+    var line = { id: state.nextId++, n: state.lineCount, color: color, mode: mode, stations: [], flips: [], vehicles: 0 };
     state.lines.push(line);
     return { ok: true, id: line.id };
   }
@@ -383,7 +432,7 @@
     var cost = m.platform;
     var nId = line.stations.length ? line.stations[atStart ? 0 : line.stations.length - 1] : null;
     var neighbour = nId !== null ? sMap.get(nId) : null;
-    var segKm = neighbour ? edgeLenPx(neighbour, station) * state.mpp / 1000 : 0;
+    var segKm = neighbour ? edgeM(state, neighbour, station) / 1000 : 0;
     return { cost: cost + segKm * m.trackKm, segKm: segKm };
   }
 
@@ -399,7 +448,7 @@
     var res = stopCost(state, line, station, sMap, front);
     if (line.stations.length) {
       var nb = sMap.get(line.stations[front ? 0 : line.stations.length - 1]);
-      var dm = Math.hypot(nb.x - station.x, nb.y - station.y) * state.mpp;
+      var dm = Math.hypot(nb.x - station.x, nb.y - station.y) * mScale(state, station.y);
       if (dm < m.minSpacingM) return { ok: false, msg: 'Too close for ' + m.name + ' (min ' + m.minSpacingM + ' m)' };
     }
     if (state.balance < res.cost) return { ok: false, msg: 'Need ' + fmtMoney(res.cost) + ' for this stop' };
@@ -428,7 +477,7 @@
     if (n > 1) {
       var a = sMap.get(front ? line.stations[0] : line.stations[n - 1]);
       var b = sMap.get(front ? line.stations[1] : line.stations[n - 2]);
-      refund += edgeLenPx(a, b) * state.mpp / 1000 * m.trackKm;
+      refund += edgeM(state, a, b) / 1000 * m.trackKm;
     }
     if (front) { line.stations.shift(); line.flips.shift(); }
     else { line.stations.pop(); if (n > 1) line.flips.pop(); }
@@ -476,7 +525,7 @@
   }
 
   var api = {
-    MODES: MODES, MODE_ORDER: MODE_ORDER, BAL: BAL, COLORS: COLORS,
+    coverage: coverage, mScale: mScale, edgeM: edgeM, lineLenM: lineLenM, MODES: MODES, MODE_ORDER: MODE_ORDER, BAL: BAL, COLORS: COLORS,
     newState: newState, computeNetwork: computeNetwork, endDay: endDay, isUnlocked: isUnlocked,
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
     undoLastStop: undoLastStop, setVehicles: setVehicles, deleteLine: deleteLine, reverseLine: reverseLine,

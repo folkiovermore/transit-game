@@ -4,7 +4,8 @@
   var R = window.TGRouting, S = window.TGSim;
   var MODES = S.MODES, BAL = S.BAL;
   var Z = 14;                       // reference zoom: all game coordinates are map pixels at this zoom
-  var SAVE_KEY = 'transit-game-save-v1';
+  var LEGACY_KEY = 'transit-game-save-v1';          // older versions kept the save in localStorage
+  var Store = window.TGStore;
   var DAY_SEC = 40;                 // real seconds per game day at 1x
   var COLOR_NAMES = { '#FFCB0D': 'Yellow', '#E8472B': 'Red', '#2A64B0': 'Blue', '#3DAA5B': 'Green', '#F28A1E': 'Orange', '#9B5DE5': 'Purple', '#00BBF9': 'Cyan', '#F15BB5': 'Pink' };
 
@@ -28,6 +29,7 @@
     lines: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18h6l4-4h6M4 6h8l4 4h4"/></svg>',
     eye: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
     save: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>',
+    chart: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V11m7 9V5m7 15v-6"/></svg>',
     close: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>'
   };
 
@@ -93,7 +95,8 @@
     state.lines.forEach(function (L) {
       if (L.stations.length >= 2 && L.stations.indexOf(sid) >= 0) best = Math.max(best, MODES[L.mode].catchM);
     });
-    return best / state.mpp;
+    var st = S.stationMap(state).get(sid);
+    return st ? best / S.mScale(state, st.y) : 0;
   }
 
   function drawCatchments() {
@@ -101,7 +104,7 @@
     state.stations.forEach(function (s) {
       var isSel = ui.selStation === s.id;
       if (!showAll && !isSel) return;
-      var r = catchRadiusFor(s.id) || (MODES.bus.catchM / state.mpp);
+      var r = catchRadiusFor(s.id) || (MODES.bus.catchM / S.mScale(state, s.y));
       var p = toScreen(s);
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
       ctx.strokeStyle = 'rgba(255,255,255,0.3)';
@@ -360,7 +363,7 @@
     ui.selStation = id; ui.selLine = null; ui.sheet = 'station'; renderSheet(); renderDock();
   }
   function selectLine(id) {
-    ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
+    ui.renaming = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
   }
 
   function startEditing(lineId) {
@@ -461,6 +464,7 @@
       dockBtn('station', ICON.pin, 'Station', ui.tool === 'station') +
       dockBtn('lines', ICON.lines, 'Lines', ui.sheet === 'lines' || ui.sheet === 'line' || ui.sheet === 'newline') +
       dockBtn('demand', ICON.eye, 'Demand', ui.showDemand) +
+      dockBtn('stats', ICON.chart, 'Stats', ui.sheet === 'stats') +
       dockBtn('save', ICON.save, 'Save', ui.sheet === 'save');
   }
   function dockBtn(act, icon, label, on) {
@@ -473,7 +477,7 @@
       var L = S.lineById(state, ui.editing);
       if (!L) { b.className = 'banner hidden'; return; }
       b.className = 'banner';
-      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + COLOR_NAMES[L.color] + ' ' + MODES[L.mode].name.toLowerCase() + ' line. Tap the map near either end of the line to extend it, or tap an existing station.</span>' +
+      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + lineName(L) + ' (' + MODES[L.mode].name.toLowerCase() + '). Tap the map near either end of the line to extend it, or tap an existing station.</span>' +
         '<button type="button" class="btn small" data-act="undo">Undo</button><button type="button" class="btn small primary" data-act="done">Done</button>';
     } else if (ui.hint && state && !state.lines.length) {
       b.className = 'banner';
@@ -488,11 +492,13 @@
   }
 
   /* ---------- sheet ---------- */
-  function lineName(L) { return COLOR_NAMES[L.color] + ' line'; }
+  function colorName(L) { return COLOR_NAMES[L.color] || ('Line ' + (L.n || L.id)); }
+  function lineName(L) { return esc(L.name || (COLOR_NAMES[L.color] ? COLOR_NAMES[L.color] + ' line' : 'Line ' + (L.n || L.id))); }
   function profitHtml(v) { return '<span class="' + (v < 0 ? 'neg' : 'pos') + '">' + (v < 0 ? '−' : '+') + ' ' + fmt(Math.abs(v)) + '</span>'; }
 
   function renderSheet() {
     var el = $('sheet');
+    if (ui.renaming && ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'lineNameInput') return;
     if (!state || ui.sheet === 'none' || ui.editing) { el.className = 'sheet hidden'; el.innerHTML = ''; return; }
     el.className = 'sheet';
     var html = '';
@@ -501,6 +507,7 @@
     else if (ui.sheet === 'station') html = sheetStation();
     else if (ui.sheet === 'newline') html = sheetNewLine();
     else if (ui.sheet === 'save') html = sheetSave();
+    else if (ui.sheet === 'stats') html = sheetStats();
     el.innerHTML = html;
   }
 
@@ -510,26 +517,51 @@
       '<button type="button" class="iconbtn" data-act="close" aria-label="Close">' + ICON.close + '</button></div>';
   }
 
+  function clockTime(t) { var d = new Date(t); return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); }
   function sheetSave() {
-    return head('Save and backup', 'The game saves automatically in this browser. A backup file lets you keep a copy or move the game to another device.') +
-      '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
+    var h = head('Save and backup', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
+    h += '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
       '<button type="button" class="btn big" data-act="import">Load backup file…</button>' +
-      '<div class="muted small">Loading a backup replaces the game you are playing now.</div>';
+      '<div class="muted small">A backup file lets you keep a copy or move the game to another device. Loading one replaces the game you are playing now.</div>';
+    if (ui.snaps && ui.snaps.length) {
+      h += '<div class="muted small"><b>Older autosaves</b> (every few minutes)</div>';
+      ui.snaps.forEach(function (e) {
+        h += '<button type="button" class="btn big" data-act="snap" data-slot="' + e.slot + '">Day ' + e.day + ' · saved at ' + clockTime(e.at) + '</button>';
+      });
+    }
+    return h;
   }
 
   /* ---------- backup files ---------- */
   function exportSave() {
-    if (state) save();
-    var raw = null;
-    try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { /* ignore */ }
-    if (!raw) return toast('Nothing to back up yet.');
-    var day = 0; try { day = JSON.parse(raw).state.day; } catch (e) { /* ignore */ }
-    var url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
-    var a = document.createElement('a');
-    a.href = url; a.download = 'transit-game-day-' + day + '.json';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
-    toast('Backup file downloaded.');
+    (state ? save() : Promise.resolve()).then(function () { return Store.get('main'); }).then(function (raw) {
+      if (!raw) return toast('Nothing to back up yet.');
+      var day = 0; try { day = JSON.parse(raw).state.day; } catch (e) { /* ignore */ }
+      var url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
+      var a = document.createElement('a');
+      a.href = url; a.download = 'transit-game-day-' + day + '.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      toast('Backup file downloaded.');
+    });
+  }
+
+  function restoreData(data, msg) {
+    var st = data && data.state;
+    if (!st || st.v !== 1 || !st.center || !Array.isArray(st.stations) || !Array.isArray(st.lines) || !Array.isArray(st.blocks)) return toast('That is not a Transit Game save.');
+    Store.put('main', JSON.stringify(data)).then(function (ok) {
+      if (!ok) return toast('Could not store it in this browser.');
+      ui.dayProg = data.dayProg || 0;
+      beginGame(st, data.view);
+      toast(msg + ' Day ' + st.day + '.');
+    });
+  }
+  function restoreSnapshot(slot) {
+    Store.get(slot).then(function (raw) {
+      var data; try { data = JSON.parse(raw); } catch (e) { return toast('That copy could not be read.'); }
+      if (state && !confirm('Replace the game you are playing with this older copy?')) return;
+      restoreData(data, 'Older copy loaded.');
+    });
   }
 
   function importSave(file) {
@@ -539,15 +571,72 @@
     rd.onload = function () {
       var data;
       try { data = JSON.parse(rd.result); } catch (e) { return toast('That is not a Transit Game backup.'); }
-      var st = data && data.state;
-      if (!st || st.v !== 1 || !st.center || !Array.isArray(st.stations) || !Array.isArray(st.lines) || !Array.isArray(st.blocks)) return toast('That is not a Transit Game backup.');
       if (state && !confirm('Replace the game you are playing with this backup?')) return;
-      try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) { return toast('Could not store the backup.'); }
-      ui.dayProg = data.dayProg || 0;
-      beginGame(st, data.view);
-      toast('Backup loaded, day ' + st.day + '.');
+      restoreData(data, 'Backup loaded.');
     };
     rd.readAsText(file);
+  }
+
+  /* A small line chart as inline SVG. */
+  function spark(values, color, label, fmtV) {
+    if (values.length < 2) return '<div class="muted small">' + label + ': not enough days yet.</div>';
+    var W = 300, H = 70, P = 4, lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+    if (hi === lo) { hi += 1; lo -= 1; }
+    var pts = values.map(function (v, i) { return (P + (W - 2 * P) * i / (values.length - 1)).toFixed(1) + ',' + (H - P - (H - 2 * P) * (v - lo) / (hi - lo)).toFixed(1); }).join(' ');
+    var zero = lo < 0 && hi > 0 ? '<line x1="0" x2="' + W + '" y1="' + (H - P - (H - 2 * P) * (0 - lo) / (hi - lo)).toFixed(1) + '" y2="' + (H - P - (H - 2 * P) * (0 - lo) / (hi - lo)).toFixed(1) + '" stroke="#555" stroke-dasharray="3 3"/>' : '';
+    return '<div class="chartbox"><div class="lrow"><b>' + label + '</b><span class="grow"></span><span class="muted">' + fmtV(values[values.length - 1]) + ' now</span></div>' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" width="100%" height="70" role="img" aria-label="' + label + '">' + zero +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>' +
+      '<div class="lrow muted small"><span>' + fmtV(lo) + '</span><span class="grow"></span><span>' + fmtV(hi) + '</span></div></div>';
+  }
+  function pct(a, b) { return b > 0 ? Math.round(100 * a / b) : 0; }
+
+  function sheetStats() {
+    var st = state.stats || { riders: 0, revenue: 0, cost: 0, profit: 0, waiting: {}, lines: {} };
+    var cov = S.coverage(state), vehicles = 0, km = 0, working = 0;
+    state.lines.forEach(function (L) { vehicles += L.vehicles; km += S.lineLenM(state, L) / 1000; if (L.stations.length >= 2) working++; });
+    var h = head('Network stats', 'Day ' + state.day);
+    h += '<div class="stats">' +
+      '<div><b>' + fmt(state.balance) + '</b><span>balance</span></div>' +
+      '<div><b>' + num(st.riders) + '</b><span>riders / day</span></div>' +
+      '<div><b>' + profitHtml(st.profit) + '</b><span>profit / day</span></div>' +
+      '<div><b>' + fmt(st.revenue) + '</b><span>fares / day</span></div>' +
+      '<div><b>' + fmt(st.cost) + '</b><span>costs / day</span></div>' +
+      '<div><b>' + num(state.lifetimePax) + '</b><span>passengers so far</span></div></div>';
+    h += '<div class="stats">' +
+      '<div><b>' + working + '</b><span>working lines</span></div>' +
+      '<div><b>' + state.stations.length + '</b><span>stops</span></div>' +
+      '<div><b>' + vehicles + '</b><span>vehicles</span></div>' +
+      '<div><b>' + km.toFixed(1) + '</b><span>km of track</span></div></div>';
+    h += '<div class="chartbox"><div class="lrow"><b>Within reach of a stop</b></div>' +
+      '<div class="lrow muted small"><span>Residents</span><span class="grow"></span><span>' + num(cov.popReached) + ' of ' + num(cov.pop) + ' (' + pct(cov.popReached, cov.pop) + '%)</span></div>' +
+      '<span class="bar"><span style="width:' + pct(cov.popReached, cov.pop) + '%;background:#FFB454"></span></span>' +
+      '<div class="lrow muted small"><span>Jobs</span><span class="grow"></span><span>' + num(cov.jobsReached) + ' of ' + num(cov.jobs) + ' (' + pct(cov.jobsReached, cov.jobs) + '%)</span></div>' +
+      '<span class="bar"><span style="width:' + pct(cov.jobsReached, cov.jobs) + '%;background:#6CA8FF"></span></span></div>';
+    var hist = state.history || [];
+    h += spark(hist.map(function (e) { return e.balance; }), '#E9E9E9', 'Balance', fmt);
+    h += spark(hist.map(function (e) { return e.riders; }), '#6CA8FF', 'Riders per day', num);
+    h += spark(hist.map(function (e) { return e.profit; }), '#6FD08C', 'Profit per day', fmt);
+    if (hist.length >= 2) h += '<div class="muted small">Last ' + hist.length + ' days.</div>';
+
+    var rows = state.lines.filter(function (L) { return st.lines[L.id]; }).sort(function (a, b) { return st.lines[b.id].profit - st.lines[a.id].profit; });
+    if (rows.length) {
+      h += '<div class="muted small"><b>Lines, best profit first</b></div>';
+      rows.forEach(function (L) {
+        var ls = st.lines[L.id];
+        h += '<button type="button" class="card linecard" data-act="selline" data-id="' + L.id + '"><span class="lrow"><span class="dot" style="background:' + L.color + '"></span><b>' + lineName(L) + '</b><span class="grow"></span>' + profitHtml(ls.profit) + '/day</span>' +
+          '<span class="muted">' + num(ls.riders) + ' riders · ' + Math.round(ls.load * 100) + '% full at peak</span></button>';
+      });
+    }
+    var sMap = S.stationMap(state);
+    var wait = Object.keys(st.waiting || {}).map(function (id) { return { id: +id, n: st.waiting[id] }; }).filter(function (w) { return w.n >= 1 && sMap.get(w.id); }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
+    if (wait.length) {
+      h += '<div class="muted small"><b>Where people are left behind</b> (trips per day)</div>';
+      wait.forEach(function (w) {
+        h += '<button type="button" class="card linecard" data-act="selstation" data-id="' + w.id + '"><span class="lrow"><b>' + esc(sMap.get(w.id).name) + '</b><span class="grow"></span><span class="neg">' + num(w.n) + '</span></span></button>';
+      });
+    }
+    return h;
   }
 
   function sheetLines() {
@@ -580,8 +669,11 @@
     var L = S.lineById(state, ui.selLine);
     if (!L) return '';
     var m = MODES[L.mode], ls = (state.stats && state.stats.lines[L.id]) || { riders: 0, load: 0, profit: 0, cost: 0 };
-    var km = S.lineLenPx(state, L) * state.mpp / 1000;
+    var km = S.lineLenM(state, L) / 1000;
     var h = head('<span class="dot" style="background:' + L.color + '"></span> ' + lineName(L), m.name + ' · ' + L.stations.length + ' stops · ' + km.toFixed(1) + ' km', 'lines');
+    if (ui.renaming) {
+      h += '<div class="renamerow"><input id="lineNameInput" type="text" maxlength="24" placeholder="Line name" value="' + esc(L.name || '') + '" autocomplete="off"><button type="button" class="btn primary" data-act="saverename">Save</button><button type="button" class="btn" data-act="cancelrename">Cancel</button></div>';
+    }
     h += '<div class="stats">' +
       '<div><b>' + num(ls.riders) + '</b><span>riders / day</span></div>' +
       '<div><b>' + Math.round(ls.load * 100) + '%</b><span>full at peak</span></div>' +
@@ -592,6 +684,7 @@
       '<button type="button" class="round primary" data-act="vplus" aria-label="Buy a vehicle">+</button></div>';
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="edit">Add stops</button>' +
       '<button type="button" class="btn" data-act="undo">Undo last stop</button>' +
+      '<button type="button" class="btn" data-act="rename">Rename</button>' +
       '<button type="button" class="btn" data-act="reverse">Reverse</button>' +
       '<button type="button" class="btn danger" data-act="delete">Delete</button></div>';
     h += '<p class="muted small tip">Tip: tap a segment of this line on the map to flip its bend.</p>';
@@ -602,11 +695,11 @@
     var s = S.stationMap(state).get(ui.selStation);
     if (!s) return '';
     var serving = state.lines.filter(function (L) { return L.stations.indexOf(s.id) >= 0 && L.stations.length >= 2; });
-    var r = catchRadiusFor(s.id) || MODES.bus.catchM / state.mpp, pop = 0, jobs = 0;
+    var r = catchRadiusFor(s.id) || MODES.bus.catchM / S.mScale(state, s.y), pop = 0, jobs = 0;
     state.blocks.forEach(function (b) { if (Math.hypot(b.x - s.x, b.y - s.y) <= r) { pop += b.pop; jobs += b.jobs; } });
     var waiting = state.stats && state.stats.waiting[s.id] || 0;
     var h = head(esc(s.name), serving.length ? 'Served by ' + serving.length + (serving.length > 1 ? ' lines' : ' line') : 'No lines yet');
-    h += '<div class="chips">' + serving.map(function (L) { return '<span class="chip"><span class="dot" style="background:' + L.color + '"></span>' + COLOR_NAMES[L.color] + ' ' + MODES[L.mode].name + '</span>'; }).join('') + '</div>';
+    h += '<div class="chips">' + serving.map(function (L) { return '<span class="chip"><span class="dot" style="background:' + L.color + '"></span>' + lineName(L) + '</span>'; }).join('') + '</div>';
     h += '<div class="stats"><div><b>' + num(pop) + '</b><span>residents nearby</span></div><div><b>' + num(jobs) + '</b><span>jobs nearby</span></div>' +
       '<div><b>' + num(waiting) + '</b><span>left behind / day</span></div></div>';
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="linefrom">New line from here</button>' +
@@ -619,12 +712,20 @@
     var act = t.getAttribute('data-act'), id = +t.getAttribute('data-id');
     var res;
     switch (act) {
-      case 'close': ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
+      case 'close': ui.renaming = false; ui.sheet = 'none'; ui.selLine = null; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
+      case 'selstation': selectStation(id); break;
+      case 'rename': ui.renaming = true; renderSheet(); setTimeout(function () { var i = $('lineNameInput'); if (i) { i.focus(); i.select(); } }, 30); break;
+      case 'cancelrename': ui.renaming = false; renderSheet(); break;
+      case 'saverename':
+        var li = $('lineNameInput'), ln = S.lineById(state, ui.selLine);
+        if (ln && li) { var nm = li.value.trim().slice(0, 24); if (nm) ln.name = nm; else delete ln.name; }
+        ui.renaming = false; renderSheet(); renderBanner(); scheduleSave(); break;
       case 'newline': ui.sheet = 'newline'; renderSheet(); break;
       case 'export': exportSave(); break;
       case 'import': $('importFile').click(); break;
+      case 'snap': restoreSnapshot(t.getAttribute('data-slot')); break;
       case 'mode':
         res = S.startLine(state, t.getAttribute('data-mode'));
         if (!res.ok) return toast(res.msg);
@@ -655,21 +756,60 @@
   }
 
   /* ---------- save / load ---------- */
+  var lastSnap = 0, saveFailed = false;
   function save() {
-    if (!state) return;
+    if (!state) return Promise.resolve();
+    var raw;
     try {
       var c = map.getCenter();
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ state: state, view: { lat: c.lat, lng: c.lng, zoom: map.getZoom() }, dayProg: ui.dayProg }));
-    } catch (e) { /* storage full or blocked: ignore */ }
+      raw = JSON.stringify({ state: state, view: { lat: c.lat, lng: c.lng, zoom: map.getZoom() }, dayProg: ui.dayProg, savedAt: Date.now() });
+    } catch (e) { return Promise.resolve(); }
+    var day = state.day, p = Store.put('main', raw).then(function (ok) {
+      if (ok) { ui.lastSaved = Date.now(); saveFailed = false; if (ui.sheet === 'save') renderSheet(); }
+      else if (!saveFailed) { saveFailed = true; toast('Could not save in this browser. Download a backup from the Save button.', 6000); }
+    });
+    if (Date.now() - lastSnap > 5 * 60 * 1000) { lastSnap = Date.now(); p = p.then(function () { return writeSnapshot(raw, day); }); }
+    return p;
+  }
+
+  /* A few older copies of the save, so a mistake can be undone. */
+  function readMeta() { return Store.get('snapmeta').then(function (m) { try { return m ? JSON.parse(m) : { n: 0, list: [] }; } catch (e) { return { n: 0, list: [] }; } }); }
+  function writeSnapshot(raw, day) {
+    return readMeta().then(function (meta) {
+      var slot = 'snap' + (meta.n % 3);
+      return Store.put(slot, raw).then(function (ok) {
+        if (!ok) return;
+        meta.list = meta.list.filter(function (e) { return e.slot !== slot; });
+        meta.list.push({ slot: slot, day: day, at: Date.now() });
+        meta.n += 1;
+        return Store.put('snapmeta', JSON.stringify(meta));
+      });
+    });
+  }
+  function loadSnapshotList() {
+    return readMeta().then(function (meta) { ui.snaps = meta.list.slice().sort(function (a, b) { return b.at - a.at; }); });
+  }
+
+  /* Resolves to the saved game or null. Moves a save from the old localStorage location when it finds one. */
+  function loadSave() {
+    return Store.get('main').then(function (raw) {
+      if (raw) { try { return JSON.parse(raw); } catch (e) { return null; } }
+      var old = null;
+      try { old = window.localStorage.getItem(LEGACY_KEY); } catch (e) { /* ignore */ }
+      if (!old) return null;
+      var parsed; try { parsed = JSON.parse(old); } catch (e) { return null; }
+      return Store.put('main', old).then(function (ok) {
+        if (ok) { try { window.localStorage.removeItem(LEGACY_KEY); } catch (e) { /* ignore */ } }
+        return parsed;
+      });
+    });
   }
   function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); }
-  function loadSave() {
-    try { var raw = localStorage.getItem(SAVE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
-  }
 
   /* ---------- new game and start screen ---------- */
   function beginGame(st, view) {
     state = st;
+    if (!state.chunks) state.chunks = {};
     centerPx = map.project(L.latLng(st.center.lat, st.center.lng), Z);
     map.setView(view ? [view.lat, view.lng] : [st.center.lat, st.center.lng], view ? view.zoom : 14, { animate: false });
     ui.editing = null; ui.selLine = null; ui.selStation = null; ui.sheet = 'none'; ui.tool = 'move'; ui.speed = 1;
@@ -700,37 +840,98 @@
       });
   }
 
-  /* Resolves to a list of blocks, or null when real data is unavailable. */
-  function loadCityBlocks(lat, lng, mpp) {
-    if (!window.TGOsm) return Promise.resolve(null);
-    var bb = TGOsm.bboxFor(lat, lng, TGOsm.CFG.radiusM);
-    return fetchOverpass(TGOsm.buildQuery(bb)).then(function (json) {
-      var res = TGOsm.buildBlocks(json.elements || [], function (la, lo) {
-        var p = map.project(L.latLng(la, lo), Z);
-        return { x: p.x - centerPx.x, y: p.y - centerPx.y };
-      }, mpp);
-      return res ? res.blocks : null;
-    }).catch(function () { return null; });
+  /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
+  var chunkBusy = false, chunkFailed = {}, chunkTimer = null;
+  function worldParams() {
+    return { wy0: centerPx.y, wsz: 256 * Math.pow(2, Z) };
+  }
+  function projFn(la, lo) {
+    var p = map.project(L.latLng(la, lo), Z);
+    return { x: p.x - centerPx.x, y: p.y - centerPx.y };
+  }
+  function chunkPxBounds(key) {
+    var b = TGOsm.chunkBox(key), a = projFn(b.n, b.w), c = projFn(b.s, b.e);
+    return { x0: a.x, y0: a.y, x1: c.x, y1: c.y, midLat: (b.s + b.n) / 2 };
+  }
+  function setLoadTag(txt) {
+    var el = $('loadTag'); if (!el) return;
+    el.textContent = txt || ''; el.className = txt ? 'loadtag' : 'loadtag hidden';
+  }
+
+  function ensureView() {
+    if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !window.TGOsm || map.getZoom() < 12) return;
+    if ($('start').className.indexOf('hidden') < 0) return;
+    var bd = map.getBounds(), c = map.getCenter(), now = Date.now();
+    var keys = TGOsm.chunksIn({ s: bd.getSouth(), n: bd.getNorth(), w: bd.getWest(), e: bd.getEast() }).filter(function (k) {
+      return !(state.chunks && state.chunks[k]) && !(chunkFailed[k] && now - chunkFailed[k] < 90000);
+    });
+    if (!keys.length) return;
+    keys.sort(function (a, b) {
+      function d(k) { var x = TGOsm.chunkBox(k); return Math.hypot((x.s + x.n) / 2 - c.lat, ((x.w + x.e) / 2 - c.lng) * Math.cos(c.lat * Math.PI / 180)); }
+      return d(a) - d(b);
+    });
+    loadChunks(keys.slice(0, 4), state);
+  }
+
+  function loadChunks(keys, st) {
+    chunkBusy = true;
+    setLoadTag('Loading homes and jobs…');
+    return fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
+      if (st !== state) return;
+      var els = json.elements || [], added = 0;
+      keys.forEach(function (k) {
+        var bnd = chunkPxBounds(k);
+        var blocks = TGOsm.buildChunkBlocks(els, projFn, mppAt(bnd.midLat), bnd, { popScale: st.popScale, jobScale: st.jobScale });
+        blocks.forEach(function (b) { st.blocks.push(b); });
+        added += blocks.length;
+        st.chunks[k] = 1;
+      });
+      if (added) { st.stats = S.computeNetwork(st); updateHud(); scheduleSave(); }
+    }).catch(function () {
+      keys.forEach(function (k) { chunkFailed[k] = Date.now(); });
+      toast('Could not load homes and jobs for this area. Will retry.', 4000);
+      clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 95000);
+    }).then(function () {
+      chunkBusy = false; setLoadTag('');
+      setTimeout(ensureView, 1500);
+    });
   }
 
   function newGameAt(lat, lng) {
     var mpp = mppAt(lat), useReal = !$('realData') || $('realData').checked;
-    function go(blocks) {
-      var st = S.newState({ lat: lat, lng: lng }, mpp, (Date.now() & 0x7fffffff), blocks);
+    centerPx = map.project(L.latLng(lat, lng), Z);
+    var world = worldParams();
+    function go(blocks, scales, keys) {
+      var seed = (Date.now() & 0x7fffffff);
+      var w = { wy0: world.wy0, wsz: world.wsz, popScale: scales ? scales.popScale : TGOsm.CFG.defaultScale, jobScale: scales ? scales.jobScale : TGOsm.CFG.defaultScale };
+      var st = S.newState({ lat: lat, lng: lng }, mpp, seed, blocks, w);
+      if (blocks && keys) keys.forEach(function (k) { st.chunks[k] = 1; });
       ui.dayProg = 0;
+      chunkFailed = {};
       beginGame(st, null);
       save();
       if (useReal && !blocks) toast('Real building data was not available, using a generated city.');
       else if (blocks) toast('Homes and jobs loaded from OpenStreetMap.');
+      setTimeout(ensureView, 2500);
     }
-    if (!useReal) { go(null); return; }
-    centerPx = map.project(L.latLng(lat, lng), Z);
+    if (!useReal || !window.TGOsm) { go(null, null, null); return; }
     $('startMsg').textContent = 'Loading buildings and land use from OpenStreetMap…';
     $('startBtn').disabled = true;
-    loadCityBlocks(lat, lng, mpp).then(function (blocks) {
+    var keys = TGOsm.chunksIn(TGOsm.bboxFor(lat, lng, TGOsm.CFG.startRadiusM));
+    fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
+      var els = json.elements || [];
+      var cal = TGOsm.calibrate(els, projFn, mpp, TGOsm.CFG.startRadiusM);
+      if (!cal) return [null, null];
+      var blocks = [];
+      keys.forEach(function (k) {
+        var bnd = chunkPxBounds(k);
+        TGOsm.buildChunkBlocks(els, projFn, mppAt(bnd.midLat), bnd, cal).forEach(function (b) { blocks.push(b); });
+      });
+      return [blocks.length >= 8 ? blocks : null, cal];
+    }).catch(function () { return [null, null]; }).then(function (r) {
       $('startBtn').disabled = false;
       $('startMsg').textContent = '';
-      go(blocks);
+      go(r[0], r[1], r[0] ? keys : null);
     });
   }
 
@@ -795,7 +996,7 @@
     map = L.map('map', {
       zoomControl: false, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 100,
       zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false,
-      doubleClickZoom: false, boxZoom: false, minZoom: 10, maxZoom: 18, attributionControl: true
+      doubleClickZoom: false, boxZoom: false, minZoom: 3, maxZoom: 18, attributionControl: true
     }).setView([53.3498, -6.2603], 14);
     map.attributionControl.setPrefix(false);
     setTiles();
@@ -805,11 +1006,15 @@
     resizeCanvas();
     map.on('resize', resizeCanvas);
     window.addEventListener('resize', function () { map.invalidateSize(); resizeCanvas(); });
+    map.on('moveend', function () { clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 600); });
     map.on('click', function (e) { onTap(e.containerPoint); });
     map.on('mousemove', function (e) { ui.hover = e.containerPoint; });
     map.on('mouseout', function () { ui.hover = null; });
 
     $('sheet').addEventListener('click', onSheetClick);
+    $('sheet').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.id === 'lineNameInput') { e.preventDefault(); onSheetClick({ target: document.querySelector('[data-act=saverename]') }); }
+    });
     $('banner').addEventListener('click', onSheetClick);
     $('dock').addEventListener('click', function (e) {
       var b = e.target.closest('[data-dock]'); if (!b || !state) return;
@@ -818,7 +1023,8 @@
       else if (a === 'station') setTool('station');
       else if (a === 'lines') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'lines' ? 'none' : 'lines'; ui.selStation = null; renderSheet(); renderDock(); }
       else if (a === 'demand') { ui.showDemand = !ui.showDemand; renderDock(); }
-      else if (a === 'save') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'save' ? 'none' : 'save'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); }
+      else if (a === 'stats') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'stats' ? 'none' : 'stats'; ui.selLine = null; ui.selStation = null; ui.renaming = false; renderSheet(); renderDock(); }
+      else if (a === 'save') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'save' ? 'none' : 'save'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); if (ui.sheet === 'save') loadSnapshotList().then(function () { if (ui.sheet === 'save') renderSheet(); }); }
     });
     document.querySelectorAll('[data-speed]').forEach(function (b) {
       b.addEventListener('click', function () { ui.speed = +b.getAttribute('data-speed'); updateHud(); });
@@ -847,11 +1053,13 @@
     $('offlineBtn').addEventListener('click', function () { newGameAt(53.3498, -6.2603); });
     $('place').addEventListener('keydown', function (e) { if (e.key === 'Enter') startFromSearch(); });
     $('againBtn').addEventListener('click', function () { $('over').className = 'overlay hidden'; $('start').className = 'overlay'; state = null; });
-    var saved = loadSave();
-    if (saved && saved.state && saved.state.v === 1 && !saved.state.over) {
-      $('continueBtn').className = 'btn big';
-      $('continueBtn').addEventListener('click', function () { ui.dayProg = saved.dayProg || 0; beginGame(saved.state, saved.view); });
-    }
+    Store.persist();
+    loadSave().then(function (saved) {
+      if (saved && saved.state && saved.state.v === 1 && !saved.state.over) {
+        $('continueBtn').className = 'btn big';
+        $('continueBtn').addEventListener('click', function () { ui.dayProg = saved.dayProg || 0; beginGame(saved.state, saved.view); });
+      }
+    });
     renderDock();
     requestAnimationFrame(frame);
     try {
@@ -860,5 +1068,5 @@
   }
 
   window.addEventListener('load', init);
-  window.TG = { get state() { return state; }, ui: ui, get gfx() { return gfx; } };
+  window.TG = { get state() { return state; }, ui: ui, get gfx() { return gfx; }, get map() { return map; } };
 })();
