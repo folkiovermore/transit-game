@@ -47,9 +47,11 @@
     return ev.list.filter(function (e) { return state.day <= e.until; });
   }
 
-  /* What the world looks like today: demand and cost multipliers, striking lines, closed stops, rush spots. */
+  /* What the world looks like today: demand, cost and fare multipliers, reduced capacity, striking lines,
+   * closed stops and rush areas. Newer events carry generic fields (dm, cm, fm, caps, closedIds, spot),
+   * the first six keep their original fields so older saves still work. */
   function fx(state) {
-    var out = { demand: seasonOf(state.day).demand, cost: 1, strike: {}, closed: {}, spots: [] };
+    var out = { demand: seasonOf(state.day).demand, cost: 1, fare: 1, cap: {}, strike: {}, closed: {}, spots: [] };
     if (!state.ev) return out;
     state.ev.list.forEach(function (e) {
       if (state.day > e.until) return;
@@ -58,55 +60,150 @@
       else if (e.type === 'fuel') out.cost *= e.mult;
       else if (e.type === 'storm') out.demand *= e.mult;
       else if (e.type === 'festival' || e.type === 'match') out.spots.push({ x: e.x, y: e.y, r: e.r, mult: e.mult });
+      if (e.dm) out.demand *= e.dm;
+      if (e.cm) out.cost *= e.cm;
+      if (e.fm) out.fare *= e.fm;
+      if (e.caps) Object.keys(e.caps).forEach(function (id) { out.cap[id] = Math.min(out.cap[id] || 1, e.caps[id]); });
+      if (e.closedIds) e.closedIds.forEach(function (id) { out.closed[id] = true; });
+      if (e.spot) out.spots.push({ x: e.spot.x, y: e.spot.y, r: e.spot.r, mult: e.spot.mult });
     });
     return out;
   }
 
-  var EVENT_KINDS = {
-    strike: { good: false, icon: '✊' },
-    fuel: { good: false, icon: '⛽' },
-    closure: { good: false, icon: '🚧' },
-    storm: { good: false, icon: '⛈' },
-    festival: { good: true, icon: '🎪' },
-    match: { good: true, icon: '🏟' }
+  /* ---------- the event catalogue ---------- */
+  var MODE_NAME = function (k) { return MODES[k].name.toLowerCase(); };
+  function profitNow(state) { return Math.max(0, state.stats ? state.stats.profit : 0); }
+
+  function spotEvent(title, text, r, mult, days, season) {
+    return {
+      good: true, season: season,
+      needs: function (st, c) { return c.stations.length > 0; },
+      build: function (st, e, c) {
+        var s = pick(st, c.stations);
+        e.spot = { x: s.x, y: s.y, r: r, mult: mult }; e.until = st.day + days - 1;
+        e.title = title + ' near ' + s.name; e.text = text;
+      }
+    };
+  }
+  function globalEvent(good, title, text, days, fields, season, weight) {
+    return {
+      good: good, season: season, weight: weight,
+      needs: function (st, c) { return c.lines.length > 0; },
+      build: function (st, e) { for (var k in fields) e[k] = fields[k]; e.until = st.day + days - 1; e.title = title; e.text = text; }
+    };
+  }
+  function oneOff(good, title, factor, text, cap) {
+    return {
+      good: good, oneOff: true,
+      needs: function (st, c) { return c.lines.length > 0 && (good || st.balance > 20000); },
+      build: function (st, e) {
+        var amt = Math.max(10000, Math.round(profitNow(st) * factor / 5000) * 5000);
+        if (!good) amt = Math.min(amt, Math.max(5000, Math.round(st.balance * 0.25 / 5000) * 5000));
+        e.money = good ? amt : -amt; e.until = st.day;
+        e.title = title; e.text = text + ' ' + (good ? '+' : '-') + money(amt) + '.';
+        st.balance += e.money;
+      }
+    };
+  }
+  function capEvent(title, text, days, mult, pickLines) {
+    return {
+      good: false,
+      needs: function (st, c) { return pickLines(st, c, true).length > 0; },
+      build: function (st, e, c) {
+        var ls = pickLines(st, c, false);
+        e.caps = {}; ls.forEach(function (L) { e.caps[L.id] = mult; });
+        e.until = st.day + days - 1;
+        e.title = title.replace('%', ls.length === 1 ? lineName(ls[0]) : ls.length + ' lines');
+        e.text = text;
+      }
+    };
+  }
+  var anyLine = function (st, c, dry) { return dry ? c.lines : [pick(st, c.lines)]; };
+  var nonBus = function (st, c, dry) { var l = c.lines.filter(function (L) { return L.mode !== 'bus'; }); return dry ? l : [pick(st, l)]; };
+  var roadLines = function (st, c, dry) { var l = c.lines.filter(function (L) { return L.mode === 'bus' || L.mode === 'tram'; }); return dry ? l : l; };
+  var oneMode = function (st, c, dry) {
+    if (dry) return c.lines;
+    var m = pick(st, c.lines).mode;
+    return c.lines.filter(function (L) { return L.mode === m; });
   };
 
-  function spawnEvent(state) {
+  var CATALOGUE = {
+    // --- bad ---
+    strike: {
+      good: false,
+      needs: function (st, c) { return c.lines.length > 0; },
+      build: function (st, e, c) { var L = pick(st, c.lines); e.lineId = L.id; e.until = st.day + 2; e.title = 'Strike on ' + lineName(L); e.text = 'No service for 3 days. Only track and stop costs continue.'; }
+    },
+    fuel: {
+      good: false,
+      needs: function (st, c) { return c.lines.length > 0; },
+      build: function (st, e) { e.mult = 1.5; e.until = st.day + 6; e.title = 'Fuel prices up'; e.text = 'Vehicle and track running costs are 50% higher for a week.'; }
+    },
+    closure: {
+      good: false,
+      needs: function (st, c) { return c.stations.length > 0; },
+      build: function (st, e, c) { var s = pick(st, c.stations); e.stationId = s.id; e.until = st.day + 3; e.title = s.name + ' closed'; e.text = 'Closed for repairs for 4 days, so nobody boards or leaves there.'; }
+    },
+    storm: globalEvent(false, 'Storm', 'Fewer people travel for 2 days.', 2, { mult: 0.65 }),
+    flu: globalEvent(false, 'Flu wave', 'One in five commuters stays home for 6 days.', 6, { dm: 0.8 }, null, 1),
+    evasion: globalEvent(false, 'Fare dodging wave', 'Fewer people pay for their ticket: fares are 15% lower for 5 days.', 5, { fm: 0.85 }),
+    pricewar: globalEvent(false, 'Taxi price war', 'Cheap taxis lure riders away: 12% fewer riders for a week.', 7, { dm: 0.88 }),
+    breakdown: capEvent('Breakdowns on %', 'Vehicles are out of action, so capacity is 40% lower for 3 days.', 3, 0.6, anyLine),
+    signal: capEvent('Signal failure on %', 'Trains crawl: capacity is halved for 2 days.', 2, 0.5, nonBus),
+    roadworks: capEvent('Road works on %', 'Delays on bus and tram lines: capacity is 25% lower for 5 days.', 5, 0.75, roadLines),
+    shortage: capEvent('Driver shortage on %', 'Not enough crew: capacity is 20% lower for 5 days.', 5, 0.8, oneMode),
+    flood: {
+      good: false,
+      needs: function (st, c) { return c.stations.length > 1; },
+      build: function (st, e, c) {
+        var a = pick(st, c.stations), b = pick(st, c.stations.filter(function (s) { return s.id !== a.id; }));
+        e.closedIds = [a.id, b.id]; e.until = st.day + 2;
+        e.title = 'Flooding at ' + a.name + ' and ' + b.name; e.text = 'Both stops closed for 3 days.';
+      }
+    },
+    vandal: oneOff(false, 'Vandalism', 0.6, 'Repairs after a bad night.'),
+    // --- good ---
+    festival: {
+      good: true,
+      needs: function (st, c) { return c.stations.length > 0; },
+      build: function (st, e, c) { var s = pick(st, c.stations); e.x = s.x; e.y = s.y; e.stationId = s.id; e.r = 1500; e.mult = 3; e.until = st.day + 2; e.title = 'Festival near ' + s.name; e.text = 'Crowds in the area for 3 days. Serve them while it lasts.'; }
+    },
+    match: {
+      good: true,
+      needs: function (st, c) { return c.stations.length > 0; },
+      build: function (st, e, c) { var s = pick(st, c.stations); e.x = s.x; e.y = s.y; e.stationId = s.id; e.r = 1200; e.mult = 4; e.until = st.day + 1; e.title = 'Big match near ' + s.name; e.text = 'A rush of riders around this stop for 2 days.'; }
+    },
+    concert: spotEvent('Concert', 'A sold-out show: a big rush of riders for one day.', 1000, 3.5, 1),
+    market: spotEvent('Market days', 'A busy market keeps the area full for 5 days.', 800, 2, 5),
+    marathon: spotEvent('City marathon', 'Thousands of runners and spectators across a wide area for a day.', 2500, 2, 1),
+    xmas: spotEvent('Christmas market', 'Winter crowds for 3 days.', 1500, 2.5, 3, 'Winter'),
+    beach: spotEvent('Beach weather', 'Everyone heads out for 3 days.', 3000, 2, 3, 'Summer'),
+    tourists: globalEvent(true, 'Tourist boom', 'Visitors everywhere: 20% more riders for 5 days.', 5, { dm: 1.2 }),
+    surge: globalEvent(true, 'Back-to-work week', 'Commuting is up: 15% more riders for 4 days.', 4, { dm: 1.15 }),
+    cheapfuel: globalEvent(true, 'Cheap fuel', 'Running costs are 20% lower for a week.', 7, { cm: 0.8 }),
+    subsidy: oneOff(true, 'Government subsidy', 1.5, 'A grant for public transport.'),
+    sponsor: oneOff(true, 'Sponsor deal', 1.0, 'A company pays to advertise on your network.')
+  };
+  var EVENT_TYPES = Object.keys(CATALOGUE);
+
+  function spawnEvent(state, forceType) {
     var ev = ensureEv(state);
     var lines = working(state);
     if (!lines.length) return null;
-    var sMap = S.stationMap(state);
-    var onLine = [];
-    lines.forEach(function (L) { L.stations.forEach(function (id) { if (onLine.indexOf(id) < 0) onLine.push(id); }); });
-    var good = rnd(state) < 0.45;
-    var types = good ? ['festival', 'match'] : ['strike', 'fuel', 'closure', 'storm'];
-    var type = pick(state, types);
-    var e = { id: ev.nextId++, type: type, good: good, start: state.day };
-    if (type === 'strike') {
-      var L = pick(state, lines);
-      e.lineId = L.id; e.until = state.day + 2;
-      e.title = 'Strike on ' + lineName(L);
-      e.text = 'No service for 3 days. Only track and stop costs continue.';
-    } else if (type === 'fuel') {
-      e.mult = 1.5; e.until = state.day + 6;
-      e.title = 'Fuel prices up';
-      e.text = 'Vehicle and track running costs are 50% higher for a week.';
-    } else if (type === 'closure') {
-      var cands = onLine.filter(function (id) { return sMap.get(id); });
-      var sid = pick(state, cands), st = sMap.get(sid);
-      e.stationId = sid; e.until = state.day + 3;
-      e.title = st.name + ' closed';
-      e.text = 'Closed for repairs for 4 days, so nobody boards or leaves there.';
-    } else if (type === 'storm') {
-      e.mult = 0.65; e.until = state.day + 1;
-      e.title = 'Storm';
-      e.text = 'Fewer people travel for 2 days.';
-    } else {
-      var st2 = sMap.get(pick(state, onLine));
-      e.x = st2.x; e.y = st2.y; e.stationId = st2.id;
-      if (type === 'festival') { e.r = 1500; e.mult = 3; e.until = state.day + 2; e.title = 'Festival near ' + st2.name; e.text = 'Crowds in the area for 3 days. Serve them while it lasts.'; }
-      else { e.r = 1200; e.mult = 4; e.until = state.day + 1; e.title = 'Big match near ' + st2.name; e.text = 'A rush of riders around this stop for 2 days.'; }
-    }
+    var sMap = S.stationMap(state), stations = [], seen = {};
+    lines.forEach(function (L) { L.stations.forEach(function (id) { if (!seen[id] && sMap.get(id)) { seen[id] = true; stations.push(sMap.get(id)); } }); });
+    var ctx = { lines: lines, stations: stations };
+    var season = seasonOf(state.day).name, running = activeEvents(state).map(function (e) { return e.type; });
+    var wantGood = rnd(state) < 0.45;
+    var pool = EVENT_TYPES.filter(function (t) {
+      var d = CATALOGUE[t];
+      if (forceType) return t === forceType && d.needs(state, ctx);
+      return d.good === wantGood && (!d.season || d.season === season) && running.indexOf(t) < 0 && d.needs(state, ctx);
+    });
+    if (!pool.length) return null;
+    var type = pick(state, pool), def = CATALOGUE[type];
+    var e = { id: ev.nextId++, type: type, good: def.good, start: state.day };
+    def.build(state, e, ctx);
     ev.list.push(e);
     return e;
   }
@@ -359,7 +456,7 @@
 
   var api = {
     ensure: ensureGoals, check: check, progress: progress, metrics: metrics, fx: fx, seasonOf: seasonOf, SEASONS: SEASONS,
-    activeEvents: activeEvents, spawnEvent: spawnEvent, EVENT_KINDS: EVENT_KINDS, YEAR: YEAR
+    activeEvents: activeEvents, spawnEvent: spawnEvent, EVENT_TYPES: EVENT_TYPES, YEAR: YEAR
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TGGoals = api;

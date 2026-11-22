@@ -103,7 +103,16 @@ Not verified: the live Overpass requests (start and panning). It was tested only
   - *Challenges*: a bus-only profit target, riders with no line over 95% full, one star line with a profit target.
   - Targets scale with the current network and rewards scale with daily profit.
 - **Seasons**: a game year is 120 days. Summer +6% riders, winter -8%.
-- **Events** (about one every 10 days, at most two at once, only once you have a working line):
-  - Bad: *strike* on a line (3 days, no service), *fuel prices* (+50% running costs for a week), *station closed* (4 days, red ring on the map), *storm* (-35% demand for 2 days).
-  - Good: *festival* (3 days) or *big match* (2 days) near one of your stops: a rush of riders in a ring on the map.
-- Implementation: `js/goals.js` registers hooks with `setHooks` in `js/sim.js`. `fx(state)` returns today's demand and cost multipliers, striking lines, closed stops and rush areas, which `computeNetwork` and `reachList` use. State is kept in `state.ev` and `state.goals` (old saves get them automatically).
+- **Events** (about one every 10 days, at most two at once, never two of the same type at once, only once you have a working line). 25 types:
+  - *Bad (13):* strike (line stops, 3 days), fuel prices (+50% costs), station closed, storm (-35% demand), flu wave (-20% demand), fare dodging (-15% fares), taxi price war (-12% demand), breakdowns (one line -40% capacity), signal failure (a non-bus line -50% capacity), road works (all bus and tram lines -25% capacity), driver shortage (all lines of one mode -20% capacity), flooding (two stops closed), vandalism (one-off repair bill).
+  - *Good (12):* festival, big match, concert, market days, city marathon (all create a rush ring around one of your stops), Christmas market (winter only), beach weather (summer only), tourist boom (+20% demand), back-to-work week (+15% demand), cheap fuel (-20% costs), government subsidy and sponsor deal (one-off cash).
+  - One-off cash amounts scale with your daily profit. A bad bill never takes more than 25% of your balance.
+- Implementation: the event catalogue is the `CATALOGUE` table in `js/goals.js`, which registers hooks with `setHooks` in `js/sim.js`. `fx(state)` returns today's demand and cost multipliers, striking lines, closed stops and rush areas, which `computeNetwork` and `reachList` use. State is kept in `state.ev` and `state.goals` (old saves get them automatically).
+
+
+## Loading data in dense cities
+- One chunk (about 9 km square) is requested at a time, nearest to the screen centre first.
+- Up to three Overpass servers are used. The second joins after 7 seconds if the first has not answered, or at once if the first errors. The first good answer wins and the rest are cancelled. An answer that says the query timed out counts as a failure, so partial data is never saved as a finished chunk.
+- If a whole chunk is too heavy for the server (typical for Lisbon, Paris, London), it is cut into four smaller squares, and each of those into four again if needed. Pieces that worked are remembered, so a retry only repeats the pieces that failed. Elements that appear in two pieces are counted once.
+- The error toast now says why it failed (server busy, too heavy for the server, timed out). Failed chunks are retried after 90 seconds.
+- Not verified against the live servers, only against fake ones that reject large squares.

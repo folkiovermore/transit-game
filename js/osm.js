@@ -57,9 +57,9 @@
   }
 
   /* Overpass QL: land use outlines with geometry, then points and buildings as centres. */
-  function buildQuery(b) {
+  function buildQuery(b, timeoutSec) {
     var box = '(' + [b.s, b.w, b.n, b.e].map(function (v) { return v.toFixed(5); }).join(',') + ')';
-    return '[out:json][timeout:90];\n' +
+    return '[out:json][timeout:' + (timeoutSec || 90) + '];\n' +
       '(way["landuse"~"^(residential|commercial|retail|industrial)$"]' + box + ';);\n' +
       'out geom;\n' +
       '(node["office"]' + box + ';node["shop"]' + box + ';' +

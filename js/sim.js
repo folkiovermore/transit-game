@@ -44,7 +44,7 @@
 
   /* Optional extensions (events, seasons, goals) plug in here; see js/goals.js. */
   var HOOKS = {};
-  var NOFX = { demand: 1, cost: 1, strike: {}, closed: {}, spots: [] };
+  var NOFX = { demand: 1, cost: 1, fare: 1, cap: {}, strike: {}, closed: {}, spots: [] };
   function getFx(state) { return (HOOKS.fx && HOOKS.fx(state)) || NOFX; }
 
   /* ---------- helpers ---------- */
@@ -192,7 +192,7 @@
     var lineInfo = new Map();
     lines.forEach(function (L) {
       var m = MODES[L.mode];
-      lineInfo.set(L.id, { line: L, peakCap: peakCapacity(state, L, sMap), lenKm: lineLenM(state, L, sMap) / 1000 });
+      lineInfo.set(L.id, { line: L, peakCap: peakCapacity(state, L, sMap) * (fx.cap[L.id] || 1), lenKm: lineLenM(state, L, sMap) / 1000 });
       for (var i = 0; i < L.stations.length; i++) node(L.stations[i], L.id);
       for (var j = 0; j < L.stations.length - 1; j++) {
         var a = sMap.get(L.stations[j]), b = sMap.get(L.stations[j + 1]);
@@ -360,7 +360,7 @@
       captured += carried;
       var km = 0;
       rt.edges.forEach(function (e) { km += e.km; });
-      var revenue = carried * 2 * (BAL.fareBase + BAL.fareKm * km);
+      var revenue = carried * 2 * (BAL.fareBase + BAL.fareKm * km) * fx.fare;
       var prevLid = null;
       rt.edges.forEach(function (e) {
         var ls = stats.lines[e.lid];

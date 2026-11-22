@@ -163,15 +163,19 @@
     });
     var sMap = S.stationMap(state);
     TGGoals.activeEvents(state).forEach(function (e) {
-      if (e.x !== undefined) {
-        var p = toScreen(e), r = e.r / S.mScale(state, e.y) * V.s;
+      var sp = e.spot || (e.x !== undefined ? e : null);
+      if (sp) {
+        var p = toScreen(sp), r = sp.r / S.mScale(state, sp.y) * V.s;
         ctx.strokeStyle = '#6FD08C'; ctx.fillStyle = 'rgba(111,208,140,0.10)'; ctx.lineWidth = 2; ctx.setLineDash([4, 6]);
         ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.283); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
-      } else if (e.type === 'closure') {
-        var s = sMap.get(e.stationId); if (!s) return;
-        var q = toScreen(s);
-        ctx.strokeStyle = '#FF6B6B'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(q.x, q.y, stationRadius() + 6, 0, 6.283); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(q.x - 5, q.y - 5); ctx.lineTo(q.x + 5, q.y + 5); ctx.moveTo(q.x + 5, q.y - 5); ctx.lineTo(q.x - 5, q.y + 5); ctx.stroke();
+      } else {
+        var ids = e.closedIds || (e.type === 'closure' ? [e.stationId] : []);
+        ids.forEach(function (sid) {
+          var s = sMap.get(sid); if (!s) return;
+          var q = toScreen(s);
+          ctx.strokeStyle = '#FF6B6B'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(q.x, q.y, stationRadius() + 6, 0, 6.283); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(q.x - 5, q.y - 5); ctx.lineTo(q.x + 5, q.y + 5); ctx.moveTo(q.x + 5, q.y - 5); ctx.lineTo(q.x - 5, q.y + 5); ctx.stroke();
+        });
       }
     });
   }
@@ -965,21 +969,85 @@
     if (state.over) showOver();
   }
 
-  var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+  var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  var lastLoadError = '';
 
-  function fetchOverpass(query, i) {
-    i = i || 0;
-    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 45000);
-    return fetch(OVERPASS[i], {
-      method: 'POST', body: 'data=' + encodeURIComponent(query),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl ? ctl.signal : undefined
-    }).then(function (r) { clearTimeout(timer); if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
-      .catch(function (e) {
-        clearTimeout(timer);
-        if (i + 1 < OVERPASS.length) return fetchOverpass(query, i + 1);
-        throw e;
+  /* Asks the servers, not all at once: the next one joins in if the first is slow (hedged request).
+   * The first good answer wins and the others are cancelled. An answer that says the query timed out is treated as a failure. */
+  function fetchOverpass(query, timeoutMs) {
+    timeoutMs = timeoutMs || 60000;
+    return new Promise(function (resolve, reject) {
+      var ctls = [], timers = [], finished = false, failed = 0, started = 0, reason = '';
+      function stopAll(except) {
+        timers.forEach(clearTimeout);
+        ctls.forEach(function (c) { if (c !== except) { try { c.abort(); } catch (e) { /* ignore */ } } });
+      }
+      function fail(why) {
+        failed++; reason = why || reason;
+        if (finished) return;
+        if (started < OVERPASS.length) launch();                  // a server answered badly: try the next at once
+        else if (failed >= started) { finished = true; stopAll(); reject(new Error(reason || 'failed')); }
+      }
+      function launch() {
+        var i = started++;
+        var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        if (ctl) ctls.push(ctl);
+        var t = setTimeout(function () { if (ctl) try { ctl.abort(); } catch (e) { /* ignore */ } }, timeoutMs);
+        timers.push(t);
+        fetch(OVERPASS[i], {
+          method: 'POST', body: 'data=' + encodeURIComponent(query),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl ? ctl.signal : undefined
+        }).then(function (r) {
+          if (!r.ok) throw new Error(r.status === 429 ? 'server busy' : r.status === 504 || r.status === 408 ? 'too heavy for the server' : 'server error ' + r.status);
+          return r.json();
+        }).then(function (json) {
+          if (json && json.remark && /error|timed out|out of memory/i.test(json.remark)) throw new Error('too heavy for the server');
+          if (finished) return;
+          finished = true; stopAll(ctl); resolve(json);
+        }).catch(function (e) {
+          clearTimeout(t);
+          fail(e && e.name === 'AbortError' ? 'timed out' : (e && e.message) || 'no connection');
+        });
+        if (started < OVERPASS.length) timers.push(setTimeout(function () { if (!finished && started < OVERPASS.length) launch(); }, 7000));
+      }
+      launch();
+    });
+  }
+
+  /* One chunk of the world. If the whole square is too heavy (a dense city), it is cut into four smaller squares, and again if needed.
+   * Pieces that worked are remembered, so a retry only repeats the pieces that failed. */
+  var pieceCache = new Map(), denseBoxes = {};
+  function boxId(b) { return [b.s, b.w, b.n, b.e].map(function (v) { return v.toFixed(5); }).join(','); }
+  function splitBox(b) {
+    var mlat = (b.s + b.n) / 2, mlng = (b.w + b.e) / 2;
+    return [{ s: b.s, n: mlat, w: b.w, e: mlng }, { s: b.s, n: mlat, w: mlng, e: b.e }, { s: mlat, n: b.n, w: b.w, e: mlng }, { s: mlat, n: b.n, w: mlng, e: b.e }];
+  }
+  function fetchBox(b, depth, startSplit) {
+    var id = boxId(b);
+    if (pieceCache.has(id)) return Promise.resolve(pieceCache.get(id));
+    startSplit = startSplit || !!denseBoxes[id];
+    function pieces() {
+      var out = [], chain = Promise.resolve();
+      splitBox(b).forEach(function (q) {
+        chain = chain.then(function () { return fetchBox(q, depth + 1, false); }).then(function (els) { out.push(els); });
       });
+      return chain.then(function () { return [].concat.apply([], out); });
+    }
+    var run = startSplit && depth < 2 ? pieces() :
+      fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000).then(function (json) { return json.elements || []; })
+        .catch(function (e) { lastLoadError = e && e.message || ''; denseBoxes[id] = true; if (depth >= 2) throw e; return pieces(); });
+    return run.then(function (els) { if (depth) pieceCache.set(id, els); return els; });
+  }
+  function fetchChunkElements(key) {
+    return fetchBox(TGOsm.chunkBox(key), 0, false);
+  }
+  function fetchKeysElements(keys) {
+    var seen = new Set(), all = [], chain = Promise.resolve();
+    keys.forEach(function (k, i) {
+      chain = chain.then(function () { setLoadTag(keys.length > 1 ? 'Loading homes and jobs ' + (i + 1) + '/' + keys.length + '…' : 'Loading homes and jobs…'); return fetchChunkElements(k); })
+        .then(function (els) { els.forEach(function (e) { var id = e.type + e.id; if (!seen.has(id)) { seen.add(id); all.push(e); } }); });
+    });
+    return chain.then(function () { return all; });
   }
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
@@ -1012,15 +1080,15 @@
       function d(k) { var x = TGOsm.chunkBox(k); return Math.hypot((x.s + x.n) / 2 - c.lat, ((x.w + x.e) / 2 - c.lng) * Math.cos(c.lat * Math.PI / 180)); }
       return d(a) - d(b);
     });
-    loadChunks(keys.slice(0, 4), state);
+    loadChunks(keys.slice(0, 1), state);
   }
 
   function loadChunks(keys, st) {
     chunkBusy = true;
     setLoadTag('Loading homes and jobs…');
-    return fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
+    return fetchKeysElements(keys).then(function (els) {
       if (st !== state) return;
-      var els = json.elements || [], added = 0;
+      var added = 0;
       keys.forEach(function (k) {
         var bnd = chunkPxBounds(k);
         var blocks = TGOsm.buildChunkBlocks(els, projFn, mppAt(bnd.midLat), bnd, { popScale: st.popScale, jobScale: st.jobScale });
@@ -1031,7 +1099,7 @@
       if (added) { st.stats = S.computeNetwork(st); updateHud(); scheduleSave(); }
     }).catch(function () {
       keys.forEach(function (k) { chunkFailed[k] = Date.now(); });
-      toast('Could not load homes and jobs for this area. Will retry.', 4000);
+      toast('Could not load homes and jobs' + (lastLoadError ? ' (' + lastLoadError + ')' : '') + '. Will retry.', 4500);
       clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 95000);
     }).then(function () {
       chunkBusy = false; setLoadTag('');
@@ -1048,9 +1116,8 @@
     st.legacyR = TGOsm.CFG.startRadiusM / st.mpp;
     chunkBusy = true; setLoadTag('Loading homes and jobs…');
     var keys = TGOsm.chunksIn(TGOsm.bboxFor(st.center.lat, st.center.lng, TGOsm.CFG.startRadiusM));
-    fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
+    fetchKeysElements(keys).then(function (els) {
       if (st !== state) return;
-      var els = json.elements || [];
       var cal = TGOsm.calibrate(els, projFn, st.mpp, TGOsm.CFG.startRadiusM);
       st.popScale = cal ? cal.popScale : TGOsm.CFG.defaultScale;
       st.jobScale = cal ? cal.jobScale : TGOsm.CFG.defaultScale;
@@ -1089,8 +1156,7 @@
     $('startMsg').textContent = 'Loading buildings and land use from OpenStreetMap…';
     $('startBtn').disabled = true;
     var keys = TGOsm.chunksIn(TGOsm.bboxFor(lat, lng, TGOsm.CFG.startRadiusM));
-    fetchOverpass(TGOsm.buildQuery(TGOsm.unionBox(keys))).then(function (json) {
-      var els = json.elements || [];
+    fetchKeysElements(keys).then(function (els) {
       var cal = TGOsm.calibrate(els, projFn, mpp, TGOsm.CFG.startRadiusM);
       if (!cal) return [null, null];
       var blocks = [];
