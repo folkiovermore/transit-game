@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Transit Game</title>
+<meta name="theme-color" content="#1b1d1f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+
+  <div id="top">
+  <header id="hud">
+    <div class="panel hudbox">
+      <span id="hudDay" class="big">Day 1</span>
+      <span class="daybar"><span id="dayBar"></span></span>
+    </div>
+    <div class="panel hudbox"><span class="lbl">Balance</span><span id="hudBal" class="big">€0</span></div>
+    <div class="panel hudbox"><span class="lbl">Riders / day</span><span id="hudRiders" class="big">0</span></div>
+    <div class="panel hudbox"><span class="lbl">Profit / day</span><span id="hudProfit" class="big">€0</span></div>
+    <div class="panel speed" role="group" aria-label="Game speed">
+      <button type="button" data-speed="0" aria-label="Pause" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></button>
+      <button type="button" data-speed="1" aria-label="Normal speed" aria-pressed="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15L19 12z"/></svg></button>
+      <button type="button" data-speed="3" aria-label="Fast" aria-pressed="false"><svg viewBox="0 0 26 24" width="20" height="18" fill="currentColor" aria-hidden="true"><path d="M3 4.5v15L13 12zM13 4.5v15L23 12z"/></svg></button>
+      <button type="button" data-speed="8" aria-label="Fastest" aria-pressed="false"><span class="x8">8×</span></button>
+    </div>
+  </header>
+  <div id="banner" class="banner hidden"></div>
+  </div>
+
+  <div id="sheet" class="sheet hidden"></div>
+  <nav id="dock" class="dock" aria-label="Tools"></nav>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <div id="start" class="overlay">
+    <div class="card start">
+      <h1>Transit Game</h1>
+      <p class="muted">Build a public transport network on a real map. Pick any place in the world, connect homes to jobs, and keep your money above zero while the city grows.</p>
+      <label for="place" class="muted small">Where do you want to build?</label>
+      <input id="place" type="text" value="Dublin, Ireland" autocomplete="off" autocapitalize="words">
+      <label class="muted small"><input type="checkbox" id="realData" checked> Use real homes and jobs from OpenStreetMap (slower start)</label>
+      <div id="startMsg" class="muted small" role="status"></div>
+      <button id="startBtn" type="button" class="btn big primary">New game</button>
+      <button id="offlineBtn" type="button" class="btn big hidden">Start in Dublin without searching</button>
+      <button id="continueBtn" type="button" class="btn big hidden">Continue saved game</button>
+      <button id="importBtn" type="button" class="btn big">Load backup file…</button>
+      <input id="importFile" type="file" accept=".json,application/json" hidden>
+      <p class="muted small">Map data © OpenStreetMap contributors, tiles © CARTO. Needs an internet connection.</p>
+    </div>
+  </div>
+
+  <div id="over" class="overlay hidden">
+    <div class="card start">
+      <h1>Bankrupt</h1>
+      <p id="overText" class="muted"></p>
+      <button id="againBtn" type="button" class="btn big primary">Back to start</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="js/routing.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/osm.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
