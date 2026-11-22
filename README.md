@@ -52,6 +52,7 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 - `index.html`, `style.css` page and styling
 - `js/routing.js` auto-routing and parallel line bundling
 - `js/sim.js` rules, costs, demand, growth, daily economy
+- `js/goals.js` seasons, random events and goals
 - `js/storage.js` saving (IndexedDB)
 - `js/osm.js` converts OpenStreetMap data into homes and jobs
 - `js/game.js` map, drawing, input, interface, saving, start screen
@@ -92,3 +93,17 @@ Not verified: the live Overpass requests (start and panning). It was tested only
 - Bus, Tram, **Light rail** (unlock 50,000 total passengers), Commuter rail (100,000), Metro (300,000), **Intercity rail** (1,500,000, 160 km/h, stops at least 8 km apart).
 - **Ferry** (unlock 40,000, 25 km/h, cheap track) is playable, but the game does not know where water is: you place ferry stops on water or shore yourself, and any line can still cross water for free. A real water map (OSM water polygons, coastlines, bridges) enforcing this is a possible phase 2.
 - **Long-distance demand**: trips of 25 km or more between far-apart places appear once stations exist at both ends. Existing mode economics are unchanged.
+
+
+## Goals, events and seasons (`js/goals.js`)
+- **Goals** (dock button): three active at once, paid in money when done. A new one appears as soon as one finishes. Four kinds:
+  - *Build*: a line of N km, lines in N separate places (not joined by a line, 15+ km apart), lines in N countries (country comes from the stop names via Nominatim, old stops are filled in on load), N lines at once, open a line of a newly unlocked mode.
+  - *Numbers*: total passengers, riders per day, profit per day, savings.
+  - *Contracts* (time limited, no penalty if missed): put a stop within 400 m of a marked busy area (gold ring on the map, "Show on map" button), or reach a rider target within 15 days.
+  - *Challenges*: a bus-only profit target, riders with no line over 95% full, one star line with a profit target.
+  - Targets scale with the current network and rewards scale with daily profit.
+- **Seasons**: a game year is 120 days. Summer +6% riders, winter -8%.
+- **Events** (about one every 10 days, at most two at once, only once you have a working line):
+  - Bad: *strike* on a line (3 days, no service), *fuel prices* (+50% running costs for a week), *station closed* (4 days, red ring on the map), *storm* (-35% demand for 2 days).
+  - Good: *festival* (3 days) or *big match* (2 days) near one of your stops: a rush of riders in a ring on the map.
+- Implementation: `js/goals.js` registers hooks with `setHooks` in `js/sim.js`. `fx(state)` returns today's demand and cost multipliers, striking lines, closed stops and rush areas, which `computeNetwork` and `reachList` use. State is kept in `state.ev` and `state.goals` (old saves get them automatically).

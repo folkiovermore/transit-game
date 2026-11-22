@@ -30,6 +30,7 @@
     eye: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
     save: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>',
     chart: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V11m7 9V5m7 15v-6"/></svg>',
+    flag: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 21V4m0 1h11l-2 4 2 4H6"/></svg>',
     close: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>'
   };
 
@@ -144,6 +145,34 @@
       ctx.setLineDash([6, 6]); ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(p.x, p.y, r * V.s, 0, 6.283); ctx.fill(); ctx.stroke();
       ctx.setLineDash([]);
+    });
+  }
+
+  /* contract markers and event areas */
+  function drawMarkers() {
+    if (!window.TGGoals || !state.goals) return;
+    var t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    state.goals.active.forEach(function (g) {
+      if (!g.spot) return;
+      var p = toScreen(g.spot), r = Math.max(10, 400 / S.mScale(state, g.spot.y) * V.s), pulse = 1 + 0.08 * Math.sin(t * 3);
+      ctx.strokeStyle = '#FFCB0D'; ctx.fillStyle = 'rgba(255,203,13,0.12)'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, r * pulse, 0, 6.283); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#FFCB0D'; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, 6.283); ctx.fill();
+      ctx.font = '600 12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#FFCB0D';
+      ctx.fillText('Goal', p.x, p.y - r * pulse - 6);
+    });
+    var sMap = S.stationMap(state);
+    TGGoals.activeEvents(state).forEach(function (e) {
+      if (e.x !== undefined) {
+        var p = toScreen(e), r = e.r / S.mScale(state, e.y) * V.s;
+        ctx.strokeStyle = '#6FD08C'; ctx.fillStyle = 'rgba(111,208,140,0.10)'; ctx.lineWidth = 2; ctx.setLineDash([4, 6]);
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.283); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+      } else if (e.type === 'closure') {
+        var s = sMap.get(e.stationId); if (!s) return;
+        var q = toScreen(s);
+        ctx.strokeStyle = '#FF6B6B'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(q.x, q.y, stationRadius() + 6, 0, 6.283); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(q.x - 5, q.y - 5); ctx.lineTo(q.x + 5, q.y + 5); ctx.moveTo(q.x + 5, q.y - 5); ctx.lineTo(q.x - 5, q.y + 5); ctx.stroke();
+      }
     });
   }
 
@@ -296,6 +325,7 @@
     if (!state) return;
     if (noTiles()) drawGrid();
     drawBlocks();
+    drawMarkers();
     drawCatchments();
     drawLines();
     drawVehicles(dt);
@@ -435,13 +465,13 @@
     pumpNames();
   }
   function queueUnnamed() {
-    state.stations.forEach(function (s) { if (!s.named) queueName(s.id); });
+    state.stations.forEach(function (s) { if (!s.named || s.cc === undefined) queueName(s.id); });
   }
   function pumpNames() {
     if (nameBusy || !nameQueue.length || !state) return;
     var st = state, id = nameQueue.shift();
     var s = S.stationMap(st).get(id);
-    if (!s || s.named) return pumpNames();
+    if (!s || (s.named && s.cc !== undefined)) return pumpNames();
     nameBusy = true;
     var ll = map.unproject(L.point(centerPx.x + s.x, centerPx.y + s.y), Z);
     fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&addressdetails=1&lat=' + ll.lat.toFixed(6) + '&lon=' + ll.lng.toFixed(6))
@@ -455,6 +485,8 @@
   }
   function applyName(st, s, j) {
     var a = (j && j.address) || {};
+    s.cc = String(a.country_code || '').toUpperCase(); s.country = a.country || '';
+    if (s.named) { scheduleSave(); return; }                 // only the country was missing, keep the name
     var base = a.road || a.pedestrian || a.footway || a.cycleway || a.path || a.neighbourhood || a.suburb || a.quarter || a.village || a.town || a.city_district || a.hamlet;
     if (!base) { s.named = true; return; }
     var area = a.suburb || a.neighbourhood || a.quarter || a.city_district || '';
@@ -476,15 +508,24 @@
   function afterChange() {
     relayout();
     state.stats = S.computeNetwork(state);
+    if (window.TGGoals) handleEvents(TGGoals.check(state));
     updateHud(); renderSheet(); renderBanner(); scheduleSave();
+  }
+  function handleEvents(events) {
+    events.forEach(function (ev) {
+      if (ev.type === 'unlock') toast(MODES[ev.mode].name + ' unlocked!', 4200);
+      else if (ev.type === 'over') showOver();
+      else if (ev.type === 'goal') toast('Goal done: ' + ev.goal.title + '. +' + fmt(ev.goal.reward), 5200);
+      else if (ev.type === 'goalExpired') toast('Contract ran out: ' + ev.goal.title, 4200);
+      else if (ev.type === 'event') toast((ev.event.good ? 'Good news: ' : 'Trouble: ') + ev.event.title, 5200);
+      else if (ev.type === 'eventEnd') toast('Over: ' + ev.event.title, 3000);
+    });
+    if (ui.sheet === 'goals') renderSheet();
   }
 
   function dayEnd() {
     var events = S.endDay(state);
-    events.forEach(function (ev) {
-      if (ev.type === 'unlock') toast(MODES[ev.mode].name + ' unlocked!', 4200);
-      if (ev.type === 'over') showOver();
-    });
+    handleEvents(events);
     if (state.balance < 0 && !state.over) toast('You are in debt. ' + (BAL.bankruptDays - state.negDays) + ' more day(s) and you go bankrupt', 4200);
     updateHud(); renderSheet(); save();
   }
@@ -492,7 +533,7 @@
   /* ---------- HUD, dock, banner, toast ---------- */
   function updateHud() {
     if (!state) return;
-    $('hudDay').textContent = 'Day ' + state.day;
+    $('hudDay').textContent = 'Day ' + state.day + (window.TGGoals ? ' · ' + TGGoals.seasonOf(state.day).name : '');
     var bal = $('hudBal'); bal.textContent = fmt(state.balance); bal.className = state.balance < 0 ? 'neg' : '';
     var st = state.stats || { riders: 0, profit: 0 };
     $('hudRiders').textContent = num(st.riders);
@@ -515,6 +556,7 @@
       dockBtn('station', ICON.pin, 'Station', ui.tool === 'station') +
       dockBtn('lines', ICON.lines, 'Lines', ui.sheet === 'lines' || ui.sheet === 'line' || ui.sheet === 'newline') +
       dockBtn('demand', ICON.eye, 'Demand', ui.showDemand) +
+      dockBtn('goals', ICON.flag, 'Goals', ui.sheet === 'goals') +
       dockBtn('stats', ICON.chart, 'Stats', ui.sheet === 'stats') +
       dockBtn('save', ICON.save, 'Save', ui.sheet === 'save');
   }
@@ -559,6 +601,7 @@
     else if (ui.sheet === 'newline') html = sheetNewLine();
     else if (ui.sheet === 'save') html = sheetSave();
     else if (ui.sheet === 'stats') html = sheetStats();
+    else if (ui.sheet === 'goals') html = sheetGoals();
     el.innerHTML = html;
   }
 
@@ -692,6 +735,40 @@
     return h;
   }
 
+  function sheetGoals() {
+    var T = window.TGGoals;
+    if (!T) return head('Goals', 'Not available');
+    var G = T.ensure(state), m = T.metrics(state), se = T.seasonOf(state.day);
+    var h = head('Goals and events', 'Day ' + state.day + ' · ' + se.name + ' (' + se.note + ')');
+    var labels = { build: 'Build', numbers: 'Numbers', contract: 'Contract', challenge: 'Challenge' };
+    h += '<div class="muted small"><b>Active goals</b>, paid when done</div>';
+    G.active.forEach(function (g) {
+      var p = T.progress(state, g, m);
+      var left = g.deadline !== undefined ? Math.max(0, g.deadline - state.day + 1) + ' days left' : '';
+      h += '<div class="card goalcard"><span class="lrow"><b>' + esc(g.title) + '</b><span class="grow"></span><span class="pos">+' + fmt(g.reward) + '</span></span>' +
+        '<span class="muted">' + labels[g.kind] + ' · ' + esc(g.desc) + '</span>' +
+        '<span class="bar"><span style="width:' + Math.round(p.frac * 100) + '%;background:#6FD08C"></span></span>' +
+        '<span class="lrow muted small"><span' + (p.bad ? ' class="neg"' : '') + '>' + esc(p.bad || p.text) + '</span><span class="grow"></span><span>' + left + '</span></span>' +
+        (g.spot ? '<button type="button" class="btn small" data-act="gotospot" data-id="' + g.id + '">Show on map</button>' : '') + '</div>';
+    });
+    var evs = T.activeEvents(state);
+    h += '<div class="muted small"><b>Events right now</b></div>';
+    if (!evs.length) h += '<div class="card muted">Nothing unusual. Things can happen any day: strikes, fuel prices, closures and storms, but also festivals and matches.</div>';
+    evs.forEach(function (e) {
+      var left = Math.max(1, e.until - state.day + 1);
+      h += '<div class="card goalcard"><span class="lrow"><span class="dot" style="background:' + (e.good ? '#6FD08C' : '#FF6B6B') + '"></span><b>' + esc(e.title) + '</b><span class="grow"></span><span class="muted small">' + left + ' day' + (left > 1 ? 's' : '') + ' left</span></span>' +
+        '<span class="muted">' + esc(e.text) + '</span></div>';
+    });
+    h += '<div class="stats"><div><b>' + G.count + '</b><span>goals done</span></div><div><b>' + fmt(G.earned) + '</b><span>earned from goals</span></div><div><b>' + G.failed + '</b><span>contracts missed</span></div></div>';
+    if (G.done.length) {
+      h += '<div class="muted small"><b>Recently done</b></div>';
+      G.done.slice(0, 5).forEach(function (d) {
+        h += '<div class="lrow muted small"><span>Day ' + d.day + ' · ' + esc(d.title) + '</span><span class="grow"></span><span class="pos">+' + fmt(d.reward) + '</span></div>';
+      });
+    }
+    return h;
+  }
+
   function sheetLines() {
     var h = head('Lines', state.lines.length ? '' : 'You have no lines yet');
     state.lines.forEach(function (L) {
@@ -771,6 +848,11 @@
       case 'lines': ui.sheet = 'lines'; ui.selStation = null; ui.pendingStation = null; renderSheet(); renderDock(); break;
       case 'selline': selectLine(id); break;
       case 'selstation': selectStation(id); break;
+      case 'gotospot': {
+        var gg = state.goals && state.goals.active.filter(function (q) { return q.id === id; })[0];
+        if (gg && gg.spot) { map.setView(map.unproject(L.point(centerPx.x + gg.spot.x, centerPx.y + gg.spot.y), Z), Math.max(map.getZoom(), 14), { animate: true }); ui.sheet = 'none'; renderSheet(); renderDock(); }
+        break;
+      }
       case 'rename': ui.renaming = true; renderSheet(); setTimeout(function () { var i = $('lineNameInput'); if (i) { i.focus(); i.select(); } }, 30); break;
       case 'cancelrename': ui.renaming = false; renderSheet(); break;
       case 'saverename':
@@ -874,6 +956,7 @@
     $('start').className = 'overlay hidden';
     $('over').className = 'overlay hidden';
     relayout(); state.stats = S.computeNetwork(state);
+    if (window.TGGoals) { TGGoals.ensure(state); TGGoals.check(state); }
     updateHud(); renderDock(); renderSheet(); renderBanner();
     state.stations.forEach(function (x) { if (x.named && /^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(x.name).trim())) { x.named = false; x.name = 'Stop ' + x.id; } });
     nameQueue = []; queueUnnamed();
@@ -1122,6 +1205,7 @@
       else if (a === 'station') setTool('station');
       else if (a === 'lines') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'lines' ? 'none' : 'lines'; ui.selStation = null; renderSheet(); renderDock(); }
       else if (a === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; renderDock(); }
+      else if (a === 'goals') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'goals' ? 'none' : 'goals'; ui.selLine = null; ui.selStation = null; ui.renaming = false; if (ui.sheet === 'goals') ui.goalsSeen = true; renderSheet(); renderDock(); }
       else if (a === 'stats') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'stats' ? 'none' : 'stats'; ui.selLine = null; ui.selStation = null; ui.renaming = false; renderSheet(); renderDock(); }
       else if (a === 'save') { if (ui.editing) finishEditing(); ui.tool = 'move'; ui.sheet = ui.sheet === 'save' ? 'none' : 'save'; ui.selLine = null; ui.selStation = null; renderSheet(); renderDock(); if (ui.sheet === 'save') loadSnapshotList().then(function () { if (ui.sheet === 'save') renderSheet(); }); }
     });

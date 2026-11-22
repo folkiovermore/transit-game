@@ -1,6 +1,6 @@
 /* Caches the game itself so it opens fast and can be installed. Map tiles always come from the network. */
-const CACHE = 'transit-game-v18';
-const FILES = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'js/storage.js', 'js/routing.js', 'js/sim.js', 'js/osm.js', 'js/game.js',
+const CACHE = 'transit-game-v19';
+const FILES = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'js/storage.js', 'js/routing.js', 'js/sim.js', 'js/goals.js', 'js/osm.js', 'js/game.js',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

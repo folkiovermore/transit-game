@@ -42,6 +42,11 @@
 
   var COLORS = ['#FFCB0D', '#E8472B', '#2A64B0', '#3DAA5B', '#F28A1E', '#9B5DE5', '#00BBF9', '#F15BB5'];
 
+  /* Optional extensions (events, seasons, goals) plug in here; see js/goals.js. */
+  var HOOKS = {};
+  var NOFX = { demand: 1, cost: 1, strike: {}, closed: {}, spots: [] };
+  function getFx(state) { return (HOOKS.fx && HOOKS.fx(state)) || NOFX; }
+
   /* ---------- helpers ---------- */
   function rng(state) {
     return function () {
@@ -124,11 +129,11 @@
 
   function reachList(state, sMap, onlyLine) {
     sMap = sMap || stationMap(state);
-    var best = new Map();
+    var best = new Map(), fx = getFx(state);
     state.lines.forEach(function (L) {
-      if (L.stations.length < 2 || (onlyLine !== undefined && L.id !== onlyLine)) return;
+      if (L.stations.length < 2 || (onlyLine !== undefined && L.id !== onlyLine) || fx.strike[L.id]) return;
       var cm = MODES[L.mode].catchM;
-      L.stations.forEach(function (id) { if (!best.has(id) || best.get(id) < cm) best.set(id, cm); });
+      L.stations.forEach(function (id) { if (fx.closed[id]) return; if (!best.has(id) || best.get(id) < cm) best.set(id, cm); });
     });
     var out = [];
     best.forEach(function (cm, id) { var s = sMap.get(id); if (s) out.push({ id: id, x: s.x, y: s.y, r: cm / mScale(state, s.y) }); });
@@ -156,8 +161,17 @@
   /* ---------- the daily network calculation ---------- */
   function computeNetwork(state) {
     var sMap = stationMap(state);
+    var fx = getFx(state);
     var reach = reachList(state, sMap);
-    var lines = state.lines.filter(function (L) { return L.stations.length >= 2; });
+    var lines = state.lines.filter(function (L) { return L.stations.length >= 2 && !fx.strike[L.id]; });
+    var spotMult = state.blocks.map(function (b) {
+      var m = 1;
+      for (var q = 0; q < fx.spots.length; q++) {
+        var sp = fx.spots[q];
+        if (Math.hypot(b.x - sp.x, b.y - sp.y) * mScale(state, b.y) <= sp.r) m = Math.max(m, sp.mult);
+      }
+      return m;
+    });
 
     var nodes = [], nodeIdx = new Map(), atStation = new Map();
     function node(sid, lid) {
@@ -209,7 +223,7 @@
       g.push(i);
     });
     state.blocks.forEach(function (h, hi) {
-      var trips = h.pop * BAL.tripRate;
+      var trips = h.pop * BAL.tripRate * fx.demand * spotMult[hi];
       potential += trips;
       var so = homeSt[hi];
       if (so === null) return;
@@ -220,7 +234,7 @@
         if (!cell) continue;
         for (var q = 0; q < cell.length; q++) {
           var bj = state.blocks[cell[q]];
-          var w = bj.jobs * Math.exp(-Math.hypot(h.x - bj.x, h.y - bj.y) / D0);
+          var w = bj.jobs * spotMult[cell[q]] * Math.exp(-Math.hypot(h.x - bj.x, h.y - bj.y) / D0);
           wsum += w; near.push(cell[q], w);
         }
       }
@@ -254,7 +268,7 @@
         var Z = 0;
         far.forEach(function (c) { var d = distM(a.x, a.y, c.x, c.y); if (d >= BAL.longMinM) Z += c.w * Math.exp(-d / BAL.longGravityM); });
         if (Z <= 0) return;
-        var trips = pop * BAL.longRate;
+        var trips = pop * BAL.longRate * fx.demand;
         attrAt.forEach(function (attr, sd) {
           if (sd === so) return;
           var b2 = sMap.get(sd); if (!b2) return;
@@ -321,11 +335,14 @@
     var stats = { lines: {}, riders: 0, revenue: 0, cost: 0, profit: 0, waiting: {}, potentialTrips: potential, edgeLoad: {} };
     lines.forEach(function (L) {
       var m = MODES[L.mode], info = lineInfo.get(L.id);
-      var cost = L.vehicles * m.vehicleDay + info.lenKm * m.maintKmDay + L.stations.length * BAL.platformDay;
+      var cost = (L.vehicles * m.vehicleDay + info.lenKm * m.maintKmDay) * fx.cost + L.stations.length * BAL.platformDay;
       stats.lines[L.id] = { riders: 0, revenue: 0, cost: cost, profit: 0, load: 0 };
     });
     state.lines.forEach(function (L) {
-      if (L.stations.length < 2 && stats.lines[L.id] === undefined) stats.lines[L.id] = { riders: 0, revenue: 0, cost: 0, profit: 0, load: 0 };
+      if (stats.lines[L.id] !== undefined) return;
+      var idle = 0;
+      if (L.stations.length >= 2 && fx.strike[L.id]) idle = MODES[L.mode].maintKmDay * lineLenM(state, L, sMap) / 1000 * fx.cost + L.stations.length * BAL.platformDay;   // on strike: only track and stops cost money
+      stats.lines[L.id] = { riders: 0, revenue: 0, cost: idle, profit: 0, load: 0, strike: !!(L.stations.length >= 2 && fx.strike[L.id]) };
     });
     ratio.forEach(function (r, k) {
       stats.edgeLoad[k] = r;
@@ -399,10 +416,12 @@
     state.history.push({ day: state.day, riders: Math.round(stats.riders), profit: Math.round(stats.profit), balance: Math.round(state.balance) });
     if (state.history.length > 120) state.history.shift();
     state.day += 1;
+    if (HOOKS.events) events = events.concat(HOOKS.events(state) || []);
     if (state.balance < 0) state.negDays += 1; else state.negDays = 0;
     if (state.negDays >= BAL.bankruptDays) { state.over = true; events.push({ type: 'over' }); }
     grow(state);
     state.stats = computeNetwork(state);
+    if (HOOKS.goals) events = events.concat(HOOKS.goals(state) || []);
     MODE_ORDER.forEach(function (k) {
       if (!MODES[k].soon && !isUnlocked(state, k) && state.lifetimePax >= MODES[k].unlockPax) {
         state.unlocked = state.unlocked || {};
@@ -575,7 +594,7 @@
     undoLastStop: undoLastStop, setVehicles: setVehicles, deleteLine: deleteLine, reverseLine: reverseLine,
     toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
-    fmtMoney: fmtMoney, reachList: reachList
+    fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TGSim = api;
