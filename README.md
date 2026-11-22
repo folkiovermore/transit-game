@@ -18,7 +18,7 @@ Open the page, type a city, press **New game**. The game saves in the browser au
 - **Save** (bottom bar) downloads a backup file or loads one. The start screen can also load a backup.
 - A scale bar sits bottom left. With Demand on, a legend explains the dots (orange homes, blue jobs, bigger means more) and the loaded and unloaded areas. Close it with the ×.
 - Keyboard: Space pauses, Esc cancels.
-- Stops can be close together: 40 m apart at minimum, and consecutive stops on a line at least 40 m (bus), 100 m (tram), 600 m (metro) or 1,200 m (rail).
+- Stops can be close together: 40 m apart at minimum, and consecutive stops on a line at least 40 m (bus), 100 m (tram), 300 m (metro and light rail) or 1,200 m (commuter rail).
 - Light rail, commuter rail, metro and intercity rail unlock as your network carries more passengers in total. Ferry unlocks at 40,000.
 - You lose if your balance stays below zero for 3 days.
 

@@ -7,10 +7,10 @@
     bus:   { name: 'Bus',   speed: 20, cap: 80,  trackKm: 80000,   platform: 8000,   vehicle: 120000,  vehicleDay: 250,  maintKmDay: 15,  minSpacingM: 40,   dwellMin: 0.6, catchM: 550, unlockPax: 0 },
     tram:  { name: 'Tram',  speed: 30, cap: 200, trackKm: 600000,  platform: 60000,  vehicle: 700000,  vehicleDay: 600,  maintKmDay: 120, minSpacingM: 100,  dwellMin: 0.8, catchM: 700, unlockPax: 15000 },
     rail:  { name: 'Rail',  speed: 80, cap: 600, trackKm: 1500000, platform: 250000, vehicle: 1800000, vehicleDay: 1400, maintKmDay: 300, minSpacingM: 1200, dwellMin: 1.5, catchM: 1100, unlockPax: 100000 },
-    metro: { name: 'Metro', speed: 55, cap: 800, trackKm: 3500000, platform: 500000, vehicle: 2500000, vehicleDay: 1800, maintKmDay: 500, minSpacingM: 600,  dwellMin: 1.0, catchM: 900, unlockPax: 300000 }
+    metro: { name: 'Metro', speed: 55, cap: 800, trackKm: 3500000, platform: 500000, vehicle: 2500000, vehicleDay: 1800, maintKmDay: 500, minSpacingM: 300,  dwellMin: 1.0, catchM: 900, unlockPax: 300000 }
   };
   MODES.rail.name = 'Commuter rail';
-  MODES.lightrail = { name: 'Light rail', speed: 40, cap: 400, trackKm: 1100000, platform: 150000, vehicle: 1400000, vehicleDay: 800, maintKmDay: 180, minSpacingM: 450, dwellMin: 0.9, catchM: 800, unlockPax: 50000 };
+  MODES.lightrail = { name: 'Light rail', speed: 40, cap: 400, trackKm: 1100000, platform: 150000, vehicle: 1400000, vehicleDay: 800, maintKmDay: 180, minSpacingM: 300, dwellMin: 0.9, catchM: 800, unlockPax: 50000 };
   MODES.intercity = { name: 'Intercity rail', speed: 160, cap: 700, trackKm: 1200000, platform: 800000, vehicle: 4000000, vehicleDay: 2500, maintKmDay: 100, minSpacingM: 8000, dwellMin: 4, catchM: 1500, unlockPax: 1500000 };
   MODES.ferry = { name: 'Ferry', speed: 25, cap: 300, trackKm: 150000, platform: 300000, vehicle: 1500000, vehicleDay: 700, maintKmDay: 20, minSpacingM: 500, dwellMin: 3, catchM: 700, unlockPax: 40000 };
   MODES.bus.vlen = 1.7; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
