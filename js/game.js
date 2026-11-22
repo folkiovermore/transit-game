@@ -7,6 +7,7 @@
   var LEGACY_KEY = 'transit-game-save-v1';          // older versions kept the save in localStorage
   var Store = window.TGStore;
   var DAY_SEC = 40;                 // real seconds per game day at 1x
+  var PALETTE = ['#FFCB0D', '#E8472B', '#2A64B0', '#3DAA5B', '#F28A1E', '#9B5DE5', '#00BBF9', '#F15BB5', '#FF6F61', '#B5E61D', '#06D6A0', '#C77DFF', '#FFD166', '#EF476F', '#118AB2', '#8D6E63', '#B0B7C3', '#FFFFFF', '#00A896', '#FF9F1C'];
   var COLOR_NAMES = { '#FFCB0D': 'Yellow', '#E8472B': 'Red', '#2A64B0': 'Blue', '#3DAA5B': 'Green', '#F28A1E': 'Orange', '#9B5DE5': 'Purple', '#00BBF9': 'Cyan', '#F15BB5': 'Pink' };
 
   function $(id) { return document.getElementById(id); }
@@ -350,6 +351,15 @@
     var target = toGame(ui.hover.x, ui.hover.y);
     var snap = stationAt(ui.hover);
     if (snap) target = snap;
+    if (ui.insertMode && L.stations.length >= 2) {
+      var ix = insertIndex(L, target), pa = sMap.get(L.stations[ix - 1]), pb = sMap.get(L.stations[ix]), st2 = !!MODES[L.mode].straight;
+      strokePath(R.routeSegment(pa, target, null, false, st2), lineWidth(), L.color + '99', [10, 8]);
+      strokePath(R.routeSegment(target, pb, null, false, st2), lineWidth(), L.color + '99', [10, 8]);
+      var pp = toScreen(target);
+      ctx.beginPath(); ctx.arc(pp.x, pp.y, stationRadius(), 0, 6.283);
+      ctx.setLineDash([4, 3]); ctx.lineWidth = 3; ctx.strokeStyle = L.color; ctx.stroke(); ctx.setLineDash([]);
+      return;
+    }
     var front = pickEnd(L, target);
     var from = sMap.get(L.stations[front ? 0 : L.stations.length - 1]);
     var g = gfx.get(L.id), prevDir = null;
@@ -490,6 +500,14 @@
     return Math.hypot(a.x - g.x, a.y - g.y) < Math.hypot(b.x - g.x, b.y - g.y);
   }
 
+  /* Insert mode: which section of the line a new stop splits, the one whose drawn path is nearest to the tap. */
+  function insertIndex(L, g) {
+    var gf = gfx.get(L.id), best = L.stations.length - 1, bd = Infinity;
+    if (!gf || !gf.segs) return best;
+    gf.segs.forEach(function (seg, i) { var d = R.distToPath(seg, g); if (d < bd) { bd = d; best = i + 1; } });
+    return best;
+  }
+
   function editTap(g, hit) {
     var L = S.lineById(state, ui.editing);
     if (!L) return;
@@ -500,14 +518,14 @@
       if (!r.ok) return toast(r.msg);
       sid = r.id; created = true;
     }
-    var res = S.addStopToLine(state, L.id, sid, pickEnd(L, hit ? hit : g));
+    var res = ui.insertMode ? S.insertStopInLine(state, L.id, sid, insertIndex(L, hit ? hit : g)) : S.addStopToLine(state, L.id, sid, pickEnd(L, hit ? hit : g));
     if (!res.ok) {
       if (created) {
         state.stations.pop(); state.balance = before;
         var m = /^Need (.+) for this stop$/.exec(res.msg || '');
         if (m) {
           var sm = S.stationMap(state), tmp = { id: -1, x: g.x, y: g.y };
-          var c = S.stopCost(state, L, tmp, sm, pickEnd(L, g)).cost + BAL.stationCost;
+          var c = (ui.insertMode ? MODES[L.mode].platform : S.stopCost(state, L, tmp, sm, pickEnd(L, g)).cost) + BAL.stationCost;
           return toast('Need ' + fmt(c) + ' (stop plus new station), you have ' + fmt(before));
         }
       }
@@ -530,16 +548,23 @@
     ui.renamingStation = false; ui.selStation = id; ui.selLine = null; ui.sheet = 'station'; renderSheet(); renderDock();
   }
   function selectLine(id) {
-    ui.renaming = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
+    ui.renaming = false; ui.pickingColor = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
+  }
+
+  function setLineColor(c) {
+    var L = state && S.lineById(state, ui.selLine);
+    if (!L || !/^#[0-9a-fA-F]{6}$/.test(c)) return;
+    L.color = c.toUpperCase(); ui.pickingColor = false;
+    renderSheet(); renderBanner(); updateHud(); scheduleSave();
   }
 
   function startEditing(lineId) {
-    ui.editing = lineId; ui.selLine = lineId; ui.selStation = null; ui.sheet = 'none'; ui.tool = 'move';
+    ui.editing = lineId; ui.insertMode = false; ui.selLine = lineId; ui.selStation = null; ui.sheet = 'none'; ui.tool = 'move';
     renderSheet(); renderBanner(); renderDock();
   }
   function finishEditing() {
     var L = S.lineById(state, ui.editing);
-    ui.editing = null; ui.hover = null;
+    ui.editing = null; ui.insertMode = false; ui.hover = null;
     if (L && L.stations.length < 2) {
       while (L.stations.length) S.undoLastStop(state, L.id);
       S.deleteLine(state, L.id);
@@ -666,8 +691,8 @@
       var L = S.lineById(state, ui.editing);
       if (!L) { b.className = 'banner hidden'; return; }
       b.className = 'banner';
-      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + lineName(L) + ' (' + MODES[L.mode].name.toLowerCase() + '). Tap the map near either end of the line to extend it, or tap an existing station.</span>' +
-        '<button type="button" class="btn small" data-act="undo">Undo</button><button type="button" class="btn small primary" data-act="done">Done</button>';
+      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + lineName(L) + ' (' + MODES[L.mode].name.toLowerCase() + '). ' + (ui.insertMode ? 'Insert mode: tap the map or an existing station and it joins the nearest part of the line.' : 'Tap the map near either end of the line to extend it, or tap an existing station.') + '</span>' +
+        (ui.insertMode ? '' : '<button type="button" class="btn small" data-act="undo">Undo</button>') + '<button type="button" class="btn small primary" data-act="done">Done</button>';
     } else if (ui.hint && state && !state.lines.length) {
       b.className = 'banner';
       b.innerHTML = '<span class="btxt">Welcome! Tap <b>Lines</b>, then <b>New line</b>, and tap the map to place stops. Orange and blue blobs show where people live and work.</span>';
@@ -689,7 +714,7 @@
   function renderSheet() {
     var el = $('sheet');
     if (ui.renaming && ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'lineNameInput') return;
-    if (ui.sheet === 'line' && document.activeElement && document.activeElement.id === 'vehInput') return;
+    if (ui.sheet === 'line' && document.activeElement && (document.activeElement.id === 'vehInput' || document.activeElement.id === 'lineColorInput')) return;
     if (ui.renamingStation && ui.sheet === 'station' && document.activeElement && document.activeElement.id === 'stationNameInput') return;
     if (!state || ui.sheet === 'none' || ui.editing) { el.className = 'sheet hidden'; el.innerHTML = ''; return; }
     el.className = 'sheet';
@@ -1058,9 +1083,16 @@
     h += '<div class="stepper"><span><b>Vehicles</b> <span class="muted">(' + fmt(m.vehicle) + ' each)</span></span><span class="grow"></span>' +
       '<button type="button" class="round" data-act="vminus" aria-label="Sell a vehicle">−</button><input id="vehInput" class="vinput" type="number" inputmode="numeric" min="1" max="' + S.BAL.maxVehicles + '" value="' + L.vehicles + '" aria-label="Number of vehicles">' +
       '<button type="button" class="round primary" data-act="vplus" aria-label="Buy a vehicle">+</button></div>';
+    if (ui.pickingColor) {
+      h += '<div class="swatches"><span class="muted small">Line colour</span><div class="swrow">' + PALETTE.map(function (c) {
+        return '<button type="button" class="sw' + (c.toLowerCase() === String(L.color).toLowerCase() ? ' on' : '') + '" data-act="setcolor" data-color="' + c + '" style="background:' + c + '" aria-label="Colour ' + c + '"></button>';
+      }).join('') + '<label class="sw custom" title="Pick any colour">+<input id="lineColorInput" type="color" value="' + (/^#[0-9a-fA-F]{6}$/.test(L.color) ? L.color : '#ffffff') + '"></label></div></div>';
+    }
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="edit">Add stops</button>' +
+      (L.stations.length >= 2 ? '<button type="button" class="btn" data-act="insert">Insert a stop</button>' : '') +
       '<button type="button" class="btn" data-act="undo">Undo last stop</button>' +
       '<button type="button" class="btn" data-act="rename">Rename</button>' +
+      '<button type="button" class="btn" data-act="colour">Colour</button>' +
       '<button type="button" class="btn" data-act="reverse">Reverse</button>' +
       '<button type="button" class="btn danger" data-act="delete">Delete</button></div>';
     h += MODES[L.mode].straight ? '<p class="muted small tip">Planes fly in a straight line between airports.</p>' : '<p class="muted small tip">Tip: tap a segment of this line on the map to flip its bend.</p>';
@@ -1150,7 +1182,10 @@
           ui.pendingStation = null;
         }
         startEditing(res.id); afterChange(); break;
+      case 'colour': ui.pickingColor = !ui.pickingColor; renderSheet(); break;
+      case 'setcolor': setLineColor(t.getAttribute('data-color')); break;
       case 'edit': startEditing(ui.selLine); break;
+      case 'insert': startEditing(ui.selLine); ui.insertMode = true; renderBanner(); toast('Tap the map: the stop joins the nearest part of the line'); break;
       case 'done': finishEditing(); break;
       case 'undo':
         res = S.undoLastStop(state, ui.editing || ui.selLine);
@@ -1624,6 +1659,7 @@
 
     $('sheet').addEventListener('click', onSheetClick);
     $('sheet').addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'lineColorInput') { setLineColor(e.target.value); return; }
       if (e.target && e.target.id === 'vehInput' && state && ui.selLine) {
         var vr = S.setVehicleCount(state, ui.selLine, e.target.value);
         if (!vr.ok) toast(vr.msg); else if (vr.msg) toast(vr.msg);

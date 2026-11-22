@@ -604,6 +604,30 @@
     return { ok: true, cost: res.cost, note: note };
   }
 
+  /* Adds a stop in the middle of a line, at position `index` (1 .. number of stops - 1), between the stops now at index-1 and index.
+     Costs the platform plus any extra track the longer route needs. */
+  function insertStopInLine(state, lineId, stationId, index) {
+    var line = lineById(state, lineId);
+    if (!line) return { ok: false, msg: 'No line selected' };
+    if (line.stations.length < 2) return { ok: false, msg: 'Finish the line first' };
+    var sMap = stationMap(state), station = sMap.get(stationId);
+    if (!station) return { ok: false, msg: 'No station there' };
+    if (line.stations.indexOf(stationId) >= 0) return { ok: false, msg: 'Already on this line' };
+    index = Math.max(1, Math.min(line.stations.length - 1, index | 0));
+    var m = MODES[line.mode], pa = sMap.get(line.stations[index - 1]), pb = sMap.get(line.stations[index]);
+    var da = Math.hypot(pa.x - station.x, pa.y - station.y) * mScale(state, station.y);
+    var db = Math.hypot(pb.x - station.x, pb.y - station.y) * mScale(state, station.y);
+    if (da < m.minSpacingM || db < m.minSpacingM) return { ok: false, msg: 'Too close to a neighbouring stop for ' + m.name + ' (min ' + (m.minSpacingM >= 1000 ? m.minSpacingM / 1000 + ' km' : m.minSpacingM + ' m') + ')' };
+    var oldKm = edgeM(state, pa, pb, m.straight) / 1000;
+    var newKm = edgeM(state, pa, station, m.straight) / 1000 + edgeM(state, station, pb, m.straight) / 1000;
+    var cost = m.platform + Math.max(0, newKm - oldKm) * m.trackKm;
+    if (state.balance < cost) return { ok: false, msg: 'Need ' + fmtMoney(cost) + ' for this stop' };
+    state.balance -= cost;
+    line.stations.splice(index, 0, stationId);
+    line.flips.splice(index - 1, 1, false, false);
+    return { ok: true, cost: cost };
+  }
+
   /* Removes the stop that was added most recently (from whichever end it was added). */
   function undoLastStop(state, lineId) {
     var line = lineById(state, lineId);
@@ -683,7 +707,7 @@
     coverage: coverage, mScale: mScale, edgeM: edgeM, lineLenM: lineLenM, MODES: MODES, MODE_ORDER: MODE_ORDER, BAL: BAL, COLORS: COLORS,
     newState: newState, computeNetwork: computeNetwork, endDay: endDay, isUnlocked: isUnlocked,
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
-    undoLastStop: undoLastStop, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
+    undoLastStop: undoLastStop, insertStopInLine: insertStopInLine, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
     toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx, edgeLenFor: edgeLenFor,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
     fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx
