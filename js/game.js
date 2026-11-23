@@ -1186,7 +1186,8 @@
       case 'unskip': skippedKeys = {}; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'loadfirst': bulk.first = bulk.first === id ? null : id; bulk.on = true; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'rebalance': rebalanceNow(); break;
-      case 'bulkload': bulk.on = !bulk.on; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
+      case 'corefirst': bulk.core = !bulk.core; if (bulk.core) { bulk.on = true; chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
+      case 'bulkload': bulk.on = !bulk.on; if (!bulk.on) bulk.core = false; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
       case 'set': {
         var key = t.getAttribute('data-key');
         if (key === 'demand') { ui.showDemand = !ui.showDemand; if (ui.showDemand) ui.legendHidden = false; }
@@ -1415,6 +1416,7 @@
 
   /* One chunk of the world. If the whole square is too heavy (a dense city), it is cut into four smaller squares, and again if needed.
    * Pieces that worked are remembered, so a retry only repeats the pieces that failed. */
+  var REQ_SERVER_S = 100, REQ_CLIENT_MS = 125000;   // v54: busy servers answer slowly, so each request gets 100 s on the server and 125 s before the game gives up (was 40-55 s and 45-60 s)
   var pieceCache = new Map(), denseBoxes = {};
   function boxId(b) { return [b.s, b.w, b.n, b.e].map(function (v) { return v.toFixed(5); }).join(','); }
   function splitBox(b) {
@@ -1436,7 +1438,7 @@
     }
     // every chunk is requested as four smaller squares (about 3.6 km), and a square that still fails is cut into four again, down to about 1 km (three levels)
     var run = (depth === 0 || startSplit) && depth < 3 ? pieces() :
-      waitCool().then(function () { tr.reqAt = Date.now(); tr.host = ''; return fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000, function (kind, txt) { if (kind === 'ask') { tr.host = txt; tr.tries = (tr.tries || 0) + 1; } else { tr.err = txt; tr.errAt = Date.now(); } }); }).then(function (json) { noteServerResult(true); return json.elements || []; })
+      waitCool().then(function () { tr.reqAt = Date.now(); tr.host = ''; return fetchOverpass(TGOsm.buildQuery(b, REQ_SERVER_S), REQ_CLIENT_MS, function (kind, txt) { if (kind === 'ask') { tr.host = txt; tr.tries = (tr.tries || 0) + 1; } else { tr.err = txt; tr.errAt = Date.now(); } }); }).then(function (json) { noteServerResult(true); return json.elements || []; })
         .catch(function (e) {
           if (e && e.message === 'skipped') throw e;
           var why = e && e.message || '';
@@ -1475,17 +1477,17 @@
 
   /* ---------- real homes and jobs, loaded one chunk at a time ---------- */
   var chunkBusy = false, chunkFailed = {}, chunkTimer = null, LOAD_ZOOM = 13;
-  var bulk = { on: false, left: 0, first: null, speed: 2 }, inFlight = {};
+  var bulk = { on: false, left: 0, first: null, speed: 2, core: false }, inFlight = {};
   function nBusy() { return Object.keys(inFlight).length; }
   try { var sp0 = +window.localStorage.getItem('transit-game-loadspeed'); if (sp0 >= 1 && sp0 <= 3) bulk.speed = sp0; } catch (e) { /* ignore */ }   // first = id of the stop whose area is loaded first
 
   /* Which map areas (chunks) the network needs: everything within reach of a stop on a working line. */
   function needInfo() {
-    var sMap = S.stationMap(state), radius = {}, per = [], all = {};
+    var sMap = S.stationMap(state), radius = {}, per = [], all = {}, isPlane = {};
     state.lines.forEach(function (Ln) {
       if (Ln.stations.length < 2) return;
       var r = MODES[Ln.mode].catchM;
-      Ln.stations.forEach(function (id) { if (!radius[id] || radius[id] < r) radius[id] = r; });
+      Ln.stations.forEach(function (id) { if (!radius[id] || radius[id] < r) radius[id] = r; if (Ln.mode === 'plane') isPlane[id] = true; });
     });
     Object.keys(radius).forEach(function (id) {
       var st = sMap.get(+id); if (!st) return;
@@ -1493,7 +1495,8 @@
       var ks = TGOsm.chunksIn(TGOsm.bboxFor(ll.lat, ll.lng, radius[id]));
       var miss = ks.filter(function (k) { return !(state.chunks && state.chunks[k]); });
       ks.forEach(function (k) { all[k] = 1; });
-      per.push({ id: st.id, name: st.name, total: ks.length, missing: miss.length, keys: miss, ll: ll });
+      var ck = TGOsm.chunkAt(ll.lat, ll.lng);
+      per.push({ id: st.id, name: st.name, total: ks.length, missing: miss.length, keys: miss, ll: ll, ck: ck, ckMissing: !(state.chunks && state.chunks[ck]), plane: !!isPlane[id] });
     });
     var keys = Object.keys(all), missing = keys.filter(function (k) { return !(state.chunks && state.chunks[k]); });
     per = per.filter(function (x) { return x.missing > 0; }).sort(function (a, b) { return b.missing - a.missing; });
@@ -1534,6 +1537,7 @@
     }
     h += '<span class="muted small"><b>Loading speed</b> (how many areas at once)</span><span class="lrow speedrow">' +
       [[1, 'Careful'], [2, 'Normal'], [3, 'Fast']].map(function (o) { return '<button type="button" class="btn' + (bulk.speed === o[0] ? ' primary' : '') + '" data-act="speed" data-id="' + o[0] + '">' + o[1] + ' (' + o[0] + ')</button>'; }).join('') + '</span>';
+    if (ni.per.some(function (x) { return x.ckMissing; })) h += '<button type="button" class="btn' + (bulk.core ? ' primary' : '') + '" data-act="corefirst">' + (bulk.core ? 'Loading the centre of each stop first…' : 'Load the centre of each stop first (airports first)') + '</button>';
     if (ni.missing.length) h += '<button type="button" class="btn big ' + (bulk.on ? '' : 'primary') + '" data-act="bulkload">' + (bulk.on ? 'Stop loading' : 'Load data around my stops') + '</button>';
     return h + '</div>';
   }
@@ -1556,7 +1560,7 @@
   function ensureView() {
     if (!state || chunkBusy || state.source !== 'osm' || !state.wsz || !state.popScale || !window.TGOsm) return;
     if ($('start').className.indexOf('hidden') < 0) return;
-    var c = map.getCenter(), now = Date.now(), keys = [];
+    var c = map.getCenter(), now = Date.now(), keys = [], coreOrder = false;
     function fresh(k) { return !(state.chunks && state.chunks[k]) && !inFlight[k] && !skippedKeys[k] && !(chunkFailed[k] && now - chunkFailed[k] < 90000); }
     if (map.getZoom() >= LOAD_ZOOM && !bulk.on) {   // while the queue runs, looking around the map loads nothing; it resumes when the queue is done or stopped
       var bd = map.getBounds();
@@ -1565,7 +1569,13 @@
     if (!keys.length && bulk.on) {
       var ni = needInfo();
       bulk.left = ni.missing.length;
-      var pri = bulk.first ? ni.per.filter(function (x) { return x.id === bulk.first; })[0] : null;
+      if (bulk.core) {   // first the one area under each stop (airports first), so every stop has some demand before the wide areas load
+        var seenC = {}, cores = ni.per.filter(function (x) { return x.ckMissing; }).sort(function (a, b) { return (b.plane ? 1 : 0) - (a.plane ? 1 : 0); })
+          .filter(function (x) { if (seenC[x.ck]) return false; seenC[x.ck] = 1; return fresh(x.ck); });
+        if (cores.length) { keys = cores.map(function (x) { return x.ck; }); c = cores[0].ll; coreOrder = true; }
+        else if (!ni.per.some(function (x) { return x.ckMissing; })) { bulk.core = false; toast('The centre of every stop is loaded. Now the wider areas.', 3500); }
+      }
+      var pri = !keys.length && bulk.first ? ni.per.filter(function (x) { return x.id === bulk.first; })[0] : null;
       if (bulk.first && !pri) bulk.first = null;                       // that stop is fully loaded
       if (pri) { keys = pri.keys.filter(fresh); if (keys.length) c = pri.ll; }
       if (!keys.length) keys = ni.missing.filter(fresh);
@@ -1574,7 +1584,7 @@
     }
     var room = (bulk.on ? bulk.speed : 1) - nBusy();
     if (!keys.length || room <= 0) return;
-    keys.sort(function (a, b) {
+    if (!coreOrder) keys.sort(function (a, b) {
       function d(k) { var x = TGOsm.chunkBox(k); return Math.hypot((x.s + x.n) / 2 - c.lat, ((x.w + x.e) / 2 - c.lng) * Math.cos(c.lat * Math.PI / 180)); }
       return d(a) - d(b);
     });
