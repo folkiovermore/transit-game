@@ -341,7 +341,7 @@
         for (var i = 0; i < reach.length; i++) {
           var d = Math.hypot(b.x - reach[i].x, b.y - reach[i].y) * S.mScale(state, b.y);
           if (d < 700) { covered = true; break; }
-          if (d < 12000) near = true;
+          if (d < 50000) near = true;   // v57: 50 km (was 12 km)
         }
         if (!covered && near) best.push({ b: b, w: w });
       });

@@ -153,3 +153,5 @@ body.dimtiles .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightne
 
 .rmlines { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .rmlines .btn[disabled] { opacity: 0.45; cursor: default; }
+
+.mapdata .picklist { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }

@@ -1537,11 +1537,12 @@
     if (ni.per.length) {
       h += '<span class="muted small"><b>Missing data near</b></span>';
       h += '<span class="muted small">Tap a stop to load its area first.</span>';
-      ni.per.slice(0, 6).forEach(function (x) {
+      h += '<div class="picklist">';
+      ni.per.forEach(function (x) {
         var first = bulk.first === x.id;
         h += '<button type="button" class="lrow small pick' + (first ? ' on' : '') + '" data-act="loadfirst" data-id="' + x.id + '"><span>' + esc(x.name) + (first ? ' · loading first' : '') + '</span><span class="grow"></span><span class="muted">' + (x.total - x.missing) + ' of ' + x.total + '</span></button>';
       });
-      if (ni.per.length > 6) h += '<span class="muted small">and ' + (ni.per.length - 6) + ' more stops</span>';
+      h += '</div>';
     }
     h += '<span class="muted small"><b>Loading speed</b> (how many areas at once)</span><span class="lrow speedrow">' +
       [[1, 'Careful'], [2, 'Normal'], [3, 'Fast']].map(function (o) { return '<button type="button" class="btn' + (bulk.speed === o[0] ? ' primary' : '') + '" data-act="speed" data-id="' + o[0] + '">' + o[1] + ' (' + o[0] + ')</button>'; }).join('') + '</span>';
