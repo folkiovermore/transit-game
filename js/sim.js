@@ -36,7 +36,7 @@
     maxVehicles: 150,
     bankruptDays: 3,
     maxBlocks: 1500,
-    growthCap: 4,              // a block can grow to this many times its size when it appeared
+    growthCap: 2,              // a block can grow to this many times its size when it appeared (2 = doubles at most)
     growthServedBonus: 1.5,    // the ceiling is this much higher while a working stop is within reach
     longRate: 0.04,            // share of residents who make a long-distance trip each day
     longGravityM: 120000,      // how quickly long-distance demand falls off with distance
@@ -466,16 +466,22 @@
   function grow(state) {
     var r = rng(state);
     var reach = reachList(state);
-    // Saves from before the growth ceiling (v50): every block stops growing where it is (cap 0). Blocks from then on get a ceiling.
+    // Saves from before the growth ceiling (v50): every block stops growing where it is (cap 0 and jcap 0). Blocks from then on get a ceiling.
     if (!state.gv) { state.blocks.forEach(function (b) { if (b.cap === undefined) { b.cap = 0; b.jcap = 0; } }); state.gv = 2; state.legacy = 1; }
+    // after "Scale them back" the blocks that were frozen start growing again, up to 4x their new size
+    if (state.rb && !state.rbg) {
+      state.blocks.forEach(function (b) { if (b.cap === 0 && b.jcap === 0) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; } });
+      state.rbg = 1;
+    }
+    function room(v, cap) { return cap > 0 ? Math.max(0, 1 - v / cap) : 0; }
     state.blocks.forEach(function (b) {
       if (b.cap === undefined) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; }   // a new block may grow to 4x its size when it appeared
-      if (b.cap === 0) return;
+      if (b.cap === 0 && b.jcap === 0) return;   // frozen
       var served = nearestReach(b, reach) !== null;
       var g = (0.003 + r() * 0.006) * (served ? 2.2 : 1), bonus = served ? BAL.growthServedBonus : 1;
       // logistic: growth slows as the block nears its ceiling (50% higher ceiling near a working stop)
-      b.pop *= 1 + g * Math.max(0, 1 - b.pop / (b.cap * bonus));
-      b.jobs *= 1 + g * 0.8 * Math.max(0, 1 - b.jobs / (b.jcap * bonus));
+      b.pop *= 1 + g * room(b.pop, b.cap * bonus);
+      b.jobs *= 1 + g * 0.8 * room(b.jobs, b.jcap * bonus);
     });
     if (state.blocks.length < BAL.maxBlocks) {
       var spawns = 1 + (r() < 0.4 ? 1 : 0);

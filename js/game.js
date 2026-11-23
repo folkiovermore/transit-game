@@ -781,9 +781,10 @@
     state.blocks.forEach(function (b) {
       var ll = map.unproject(L.point(centerPx.x + b.x, centerPx.y + b.y), Z), k = TGOsm.chunkAt(ll.lat, ll.lng);
       if (plan.fp[k] !== undefined) { b.pop *= plan.fp[k]; b.jobs *= plan.fj[k]; }
-      if (b.cap === 0) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; }   // frozen blocks start growing again, up to 4x their new size
+      if (b.cap === undefined || (b.cap === 0 && b.jcap === 0)) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; }   // blocks start growing again, up to 4x their new size
     });
-    state.rb = 1;
+    state.rb = 1; state.rbg = 1;
+    if (!state.gv) { state.gv = 2; state.legacy = 1; }   // done before any day has passed since the update: do not freeze everything on the next day
     state.stats = S.computeNetwork(state);
     afterChange(); renderSheet();
     toast('Scaled back ' + plan.areas + ' areas');
@@ -1360,8 +1361,9 @@
 
   /* Asks the servers, not all at once: the next one joins in if the first is slow (hedged request).
    * The first good answer wins and the others are cancelled. An answer that says the query timed out is treated as a failure. */
-  function fetchOverpass(query, timeoutMs) {
+  function fetchOverpass(query, timeoutMs, note) {
     timeoutMs = timeoutMs || 60000;
+    note = note || function () {};
     var hook = null, startAt = nextServer++;
     function drop() { var i = skipHooks.indexOf(hook); if (i >= 0) skipHooks.splice(i, 1); }
     var prom = new Promise(function (resolve, reject) {
@@ -1385,6 +1387,8 @@
         if (ctl) ctls.push(ctl);
         var t = setTimeout(function () { if (ctl) try { ctl.abort(); } catch (e) { /* ignore */ } }, timeoutMs);
         timers.push(t);
+        var host = OVERPASS[(startAt + i) % OVERPASS.length].replace(/^https:\/\//, '').split('/')[0];
+        note('ask', host);
         fetch(OVERPASS[(startAt + i) % OVERPASS.length], {
           method: 'POST', body: 'data=' + encodeURIComponent(query),
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl ? ctl.signal : undefined
@@ -1397,7 +1401,9 @@
           finished = true; stopAll(ctl); resolve(json);
         }).catch(function (e) {
           clearTimeout(t);
-          fail(e && e.name === 'AbortError' ? 'timed out' : (e && e.message) || 'no connection');
+          var why0 = e && e.name === 'AbortError' ? 'timed out' : (e && e.message) || 'no connection';
+          if (!finished) note('fail', host + ': ' + why0);
+          fail(why0);
         });
         if (started < OVERPASS.length) timers.push(setTimeout(function () { if (!finished && started < OVERPASS.length) launch(); }, 7000));
       }
@@ -1415,32 +1421,49 @@
     var mlat = (b.s + b.n) / 2, mlng = (b.w + b.e) / 2;
     return [{ s: b.s, n: mlat, w: b.w, e: mlng }, { s: b.s, n: mlat, w: mlng, e: b.e }, { s: mlat, n: b.n, w: b.w, e: mlng }, { s: mlat, n: b.n, w: mlng, e: b.e }];
   }
-  function fetchBox(b, depth, startSplit) {
+  function fetchBox(b, depth, startSplit, tr) {
+    tr = tr || {};
     var id = boxId(b);
     if (skipping) return Promise.reject(new Error('skipped'));
     if (pieceCache.has(id)) return Promise.resolve(pieceCache.get(id));
     startSplit = startSplit || !!denseBoxes[id];
     function pieces() {
       var out = [], chain = Promise.resolve();
-      splitBox(b).forEach(function (q) {
-        chain = chain.then(function () { return fetchBox(q, depth + 1, false); }).then(function (els) { out.push(els); });
+      splitBox(b).forEach(function (q, qi) {
+        chain = chain.then(function () { if (tr.stack) { tr.stack.length = depth; tr.stack[depth] = qi + 1; } return fetchBox(q, depth + 1, false, tr); }).then(function (els) { out.push(els); if (tr.stack && depth === 0) tr.done = qi + 1; });
       });
       return chain.then(function () { return [].concat.apply([], out); });
     }
     // every chunk is requested as four smaller squares (about 3.6 km), and a square that still fails is cut into four again, down to about 1 km (three levels)
     var run = (depth === 0 || startSplit) && depth < 3 ? pieces() :
-      waitCool().then(function () { return fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000); }).then(function (json) { noteServerResult(true); return json.elements || []; })
+      waitCool().then(function () { tr.reqAt = Date.now(); tr.host = ''; return fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000, function (kind, txt) { if (kind === 'ask') { tr.host = txt; tr.tries = (tr.tries || 0) + 1; } else { tr.err = txt; tr.errAt = Date.now(); } }); }).then(function (json) { noteServerResult(true); return json.elements || []; })
         .catch(function (e) {
           if (e && e.message === 'skipped') throw e;
           var why = e && e.message || '';
-          if (/failed to fetch|networkerror|no connection|server busy|load failed/i.test(why)) { noteServerResult(false, why); throw e; }   // a network problem is not a sign the square is too heavy: do not cut it up
-          lastLoadError = why; denseBoxes[id] = true; if (depth >= 3) throw e; return pieces();
+          if (/failed to fetch|networkerror|no connection|server busy|load failed/i.test(why)) { noteServerResult(false, why); tr.err = why; tr.errAt = Date.now(); throw e; }   // a network problem is not a sign the square is too heavy: do not cut it up
+          lastLoadError = why; denseBoxes[id] = true; tr.err = why + ' (cutting the square into 4 smaller ones)'; tr.errAt = Date.now(); if (depth >= 3) throw e; return pieces();
         });
     return run.then(function (els) { if (depth) pieceCache.set(id, els); return els; });
   }
+  var jobs = {};   // live progress of the area being loaded: pieces done, what is being asked, last error (shown in the Map data card)
   function fetchChunkElements(key) {
-    return fetchBox(TGOsm.chunkBox(key), 0, false);
+    var tr = jobs[key] = { t0: Date.now(), stack: [], done: 0, tries: 0, host: '', err: '', errAt: 0, reqAt: 0 };
+    return fetchBox(TGOsm.chunkBox(key), 0, false, tr).then(function (r) { delete jobs[key]; return r; }, function (e) { delete jobs[key]; throw e; });
   }
+  function jobText(k) {
+    var tr = jobs[k]; if (!tr) return 'starting…';
+    var now = Date.now(), sec = function (t) { return Math.round((now - t) / 1000); };
+    var out = 'Square ' + Math.min(4, tr.done + 1) + ' of 4' + (tr.stack.length > 1 ? ' (cut smaller: part ' + tr.stack.slice(1).join(' › ') + ' of 4)' : '') + ' · ' + sec(tr.t0) + ' s so far';
+    if (coolUntil > now) out += '<br>Servers did not answer, waiting ' + Math.ceil((coolUntil - now) / 1000) + ' s before trying again';
+    else if (tr.reqAt) out += '<br>Asking ' + esc(tr.host || '…') + ' for ' + sec(tr.reqAt) + ' s (attempt ' + (tr.tries || 1) + ')';
+    if (!tr.err && lastLoadError) out += '<br>Last problem: ' + esc(lastLoadError);
+    if (tr.err) out += '<br>Last problem ' + sec(tr.errAt) + ' s ago: ' + esc(tr.err);
+    return out;
+  }
+  setInterval(function () {
+    var el = $('jobLive'); if (!el || !nBusy()) return;
+    el.innerHTML = Object.keys(inFlight).map(function (k) { return '<b>' + esc(nearestStationName(k)) + '</b><br>' + jobText(k); }).join('<br><br>');
+  }, 1000);
   function fetchKeysElements(keys) {
     var seen = new Set(), all = [], chain = Promise.resolve();
     keys.forEach(function (k, i) {
@@ -1490,7 +1513,7 @@
       '<span class="lrow"><b>Around your stops</b><span class="grow"></span><span class="muted">' + loaded + ' of ' + ni.total + ' areas · ' + pct + '%</span></span>' +
       '<span class="bar"><i style="width:' + pct + '%"></i></span>';
     if (nBusy()) {
-      Object.keys(inFlight).forEach(function (k) { h += '<span class="muted">Loading now: the area near ' + esc(nearestStationName(k)) + '</span>'; });
+      h += '<span class="muted small">Loading now</span><span class="muted small" id="jobLive">' + Object.keys(inFlight).map(function (k) { return '<b>' + esc(nearestStationName(k)) + '</b><br>' + jobText(k); }).join('<br><br>') + '</span>';
       h += '<button type="button" class="btn" data-act="skiparea">' + (nBusy() > 1 ? 'Skip these areas' : 'Skip this area') + '</button>';
     }
     else if (ni.missing.length && bulk.on) h += '<span class="muted">Waiting for the next area…</span>';
