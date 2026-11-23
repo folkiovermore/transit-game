@@ -1341,7 +1341,19 @@
     if (state.over) showOver();
   }
 
-  var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  // v61: five servers. overpass.kumi.systems is the old name of overpass.private.coffee (same operator), z.overpass-api.de is one of the two machines behind overpass-api.de,
+  // and ovp.dresel.systems is a free Europe-only copy (no key, updated nightly): it is only asked about squares inside Europe, because for anywhere else it would answer "nothing here" and the area would be saved empty.
+  var OVERPASS = [
+    { url: 'https://overpass-api.de/api/interpreter' },
+    { url: 'https://overpass.kumi.systems/api/interpreter' },
+    { url: 'https://overpass.private.coffee/api/interpreter' },
+    { url: 'https://z.overpass-api.de/api/interpreter' },
+    { url: 'https://ovp.dresel.systems/api/interpreter', box: { s: 36, n: 71, w: -11, e: 32 } }
+  ];
+  function serversFor(b) {
+    if (!b) return OVERPASS.filter(function (x) { return !x.box; });
+    return OVERPASS.filter(function (x) { return !x.box || (b.s >= x.box.s && b.n <= x.box.n && b.w >= x.box.w && b.e <= x.box.e); });
+  }
   var lastLoadError = '';
   var coolUntil = 0, coolStep = 0;   // when every server fails to answer, pause for a while instead of hammering them (45 s, then 90 s, up to 3 min)
   function waitCool() {
@@ -1362,8 +1374,9 @@
 
   /* Asks the servers, not all at once: the next one joins in if the first is slow (hedged request).
    * The first good answer wins and the others are cancelled. An answer that says the query timed out is treated as a failure. */
-  function fetchOverpass(query, timeoutMs, note) {
+  function fetchOverpass(query, timeoutMs, note, area) {
     timeoutMs = timeoutMs || 60000;
+    var SRV = serversFor(area);
     note = note || function () {};
     var hook = null, startAt = nextServer++;
     function drop() { var i = skipHooks.indexOf(hook); if (i >= 0) skipHooks.splice(i, 1); }
@@ -1379,7 +1392,7 @@
       function fail(why) {
         failed++; reason = why || reason;
         if (finished) return;
-        if (started < OVERPASS.length) launch();                  // a server answered badly: try the next at once
+        if (started < SRV.length) launch();                  // a server answered badly: try the next at once
         else if (failed >= started) { finished = true; stopAll(); reject(new Error(reason || 'failed')); }
       }
       function launch() {
@@ -1388,9 +1401,9 @@
         if (ctl) ctls.push(ctl);
         var t = setTimeout(function () { if (ctl) try { ctl.abort(); } catch (e) { /* ignore */ } }, timeoutMs);
         timers.push(t);
-        var host = OVERPASS[(startAt + i) % OVERPASS.length].replace(/^https:\/\//, '').split('/')[0];
+        var surl = SRV[(startAt + i) % SRV.length].url, host = surl.replace(/^https:\/\//, '').split('/')[0];
         note('ask', host);
-        fetch(OVERPASS[(startAt + i) % OVERPASS.length], {
+        fetch(surl, {
           method: 'POST', body: 'data=' + encodeURIComponent(query),
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl ? ctl.signal : undefined
         }).then(function (r) {
@@ -1406,7 +1419,7 @@
           if (!finished) note('fail', host + ': ' + why0);
           fail(why0);
         });
-        if (started < OVERPASS.length) timers.push(setTimeout(function () { if (!finished && started < OVERPASS.length) launch(); }, 7000));
+        if (started < SRV.length) timers.push(setTimeout(function () { if (!finished && started < SRV.length) launch(); }, 7000));
       }
       launch();
     });
@@ -1445,7 +1458,7 @@
     }
     // every chunk is requested as four smaller squares (about 3.6 km), and a square that still fails is cut into four again, down to about 1 km (three levels)
     var run = (depth === 0 || startSplit) && depth < 3 ? pieces() :
-      waitCool().then(function () { tr.reqAt = Date.now(); tr.host = ''; return fetchOverpass(TGOsm.buildQuery(b, REQ_SERVER_S), REQ_CLIENT_MS, function (kind, txt) { if (kind === 'ask') { tr.host = txt; tr.tries = (tr.tries || 0) + 1; } else { tr.err = txt; tr.errAt = Date.now(); } }); }).then(function (json) { noteServerResult(true); return json.elements || []; })
+      waitCool().then(function () { tr.reqAt = Date.now(); tr.host = ''; return fetchOverpass(TGOsm.buildQuery(b, REQ_SERVER_S), REQ_CLIENT_MS, function (kind, txt) { if (kind === 'ask') { tr.host = txt; tr.tries = (tr.tries || 0) + 1; } else { tr.err = txt; tr.errAt = Date.now(); } }, b); }).then(function (json) { noteServerResult(true); return json.elements || []; })
         .catch(function (e) {
           if (e && e.message === 'skipped') throw e;
           var why = e && e.message || '';
