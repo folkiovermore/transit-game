@@ -248,8 +248,9 @@
       if (ui.speed > 0 && !state.over) g.t += dt * ui.speed * m.speed * 4 / (2 * Math.max(40, g.baseLen));
       var load = state.stats && state.stats.lines[L.id] ? Math.min(1, state.stats.lines[L.id].load) : 0;
       if (!ui.view.vehicles || !lineShown(L)) return;
-      for (var i = 0; i < L.vehicles; i++) {
-        var ph = ((g.t + i / L.vehicles) % 1 + 1) % 1;
+      var nDraw = Math.min(L.vehicles, 60);   // big fleets are drawn as at most 60 vehicles per line, evenly spread, to keep the map smooth
+      for (var i = 0; i < nDraw; i++) {
+        var ph = ((g.t + i / nDraw) % 1 + 1) % 1;
         var u = ph < 0.5 ? ph * 2 : 2 - ph * 2;
         var pt = R.pointAlong(g.path, u * g.len);
         var ang = pt.ang + (ph < 0.5 ? 0 : Math.PI);
@@ -740,6 +741,54 @@
     return '<button type="button" class="toggle" data-act="set" data-key="' + key + '"' + (modeKey ? ' data-mode="' + modeKey + '"' : '') + ' aria-pressed="' + on + '">' +
       '<span class="tgtxt"><b>' + label + '</b>' + (hint ? '<span class="muted small">' + hint + '</span>' : '') + '</span><span class="sw"><i></i></span></button>';
   }
+  /* ---- scaling back cities that grew without a ceiling (saves from before v50) ---- */
+  function chunkStats() {
+    var g = {};
+    state.blocks.forEach(function (b) {
+      var ll = map.unproject(L.point(centerPx.x + b.x, centerPx.y + b.y), Z), k = TGOsm.chunkAt(ll.lat, ll.lng);
+      var r = g[k] || (g[k] = { n: 0, pop: 0, jobs: 0 }); r.n++; r.pop += b.pop; r.jobs += b.jobs;
+    });
+    return g;
+  }
+  function median(a) { a = a.slice().sort(function (x, y) { return x - y; }); return a.length ? a[Math.floor(a.length / 2)] : 0; }
+  /* An area that has not grown much has about 50 to 150 people per block. A map area whose blocks average more than one and a half times the typical
+   * area is scaled down to that level (homes and jobs separately), keeping its shape. Areas at or below it are left alone. */
+  function rebalancePlan() {
+    var g = chunkStats(), keys = Object.keys(g).filter(function (k) { return g[k].n >= 3; });
+    var tp = Math.max(150, 1.5 * median(keys.map(function (k) { return g[k].pop / g[k].n; })));
+    var tj = Math.max(40, 1.5 * median(keys.map(function (k) { return g[k].jobs / g[k].n; })));
+    var fp = {}, fj = {}, hit = 0, p0 = 0, p1 = 0;
+    keys.forEach(function (k) {
+      var r = g[k], ap = r.pop / r.n, aj = r.jobs / r.n;
+      fp[k] = ap > tp ? tp / ap : 1; fj[k] = aj > tj ? tj / aj : 1;
+      if (fp[k] < 1 || fj[k] < 1) hit++;
+      p0 += r.pop; p1 += r.pop * fp[k];
+    });
+    return { fp: fp, fj: fj, areas: hit, before: p0, after: p1, tp: tp, tj: tj };
+  }
+  function rebalanceHtml() {
+    if (!state || !state.blocks || state.source !== 'osm' || !window.TGOsm || state.rb || !(state.legacy || !state.gv)) return '';
+    var plan = rebalancePlan();
+    if (!plan.areas) return '';
+    return '<div class="mapdata"><b>Cities that grew too big</b>' +
+      '<span class="muted small">Before v50 homes and jobs grew without a limit, so old cities can be far bigger than real life. ' + plan.areas + ' map areas are well above a typical size. ' +
+      'Scaling them back would take residents on your map from ' + num(Math.round(plan.before)) + ' to about ' + num(Math.round(plan.after)) + '. Earnings will drop. Make a backup first.</span>' +
+      '<button type="button" class="btn" data-act="rebalance">Scale them back</button></div>';
+  }
+  function rebalanceNow() {
+    var plan = rebalancePlan();
+    if (!window.confirm('Scale back ' + plan.areas + ' oversized map areas? Residents on the map go from ' + num(Math.round(plan.before)) + ' to about ' + num(Math.round(plan.after)) + '. This cannot be undone (a backup file first is a good idea).')) return;
+    state.blocks.forEach(function (b) {
+      var ll = map.unproject(L.point(centerPx.x + b.x, centerPx.y + b.y), Z), k = TGOsm.chunkAt(ll.lat, ll.lng);
+      if (plan.fp[k] !== undefined) { b.pop *= plan.fp[k]; b.jobs *= plan.fj[k]; }
+      if (b.cap === 0) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; }   // frozen blocks start growing again, up to 4x their new size
+    });
+    state.rb = 1;
+    state.stats = S.computeNetwork(state);
+    afterChange(); renderSheet();
+    toast('Scaled back ' + plan.areas + ' areas');
+  }
+
   function viewSettingsHtml() {
     var v = ui.view;
     var h = '<div class="muted small"><b>Show on the map</b></div><div class="togglelist">' +
@@ -761,6 +810,7 @@
   function sheetSave() {
     var h = head('Menu', 'Autosave is on. ' + (ui.lastSaved ? 'Last saved at ' + clockTime(ui.lastSaved) + '.' : 'Saving…'));
     h += mapDataHtml();
+    h += rebalanceHtml();
     h += viewSettingsHtml();
     h += '<div class="muted small"><b>Save and backup</b></div>';
     h += '<button type="button" class="btn big primary" data-act="export">Download backup file</button>' +
@@ -1134,6 +1184,7 @@
       case 'skiparea': skipLoading(); break;
       case 'unskip': skippedKeys = {}; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
       case 'loadfirst': bulk.first = bulk.first === id ? null : id; bulk.on = true; chunkFailed = {}; setTimeout(ensureView, 50); renderSheet(); break;
+      case 'rebalance': rebalanceNow(); break;
       case 'bulkload': bulk.on = !bulk.on; if (bulk.on) { chunkFailed = {}; setTimeout(ensureView, 50); } renderSheet(); break;
       case 'set': {
         var key = t.getAttribute('data-key');
@@ -1290,6 +1341,19 @@
 
   var OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
   var lastLoadError = '';
+  var coolUntil = 0, coolStep = 0;   // when every server fails to answer, pause for a while instead of hammering them (45 s, then 90 s, up to 3 min)
+  function waitCool() {
+    return new Promise(function (res) { (function tick() { if (skipping || Date.now() >= coolUntil) res(); else setTimeout(tick, 500); })(); });
+  }
+  function noteServerResult(ok, why) {
+    if (ok) { coolStep = 0; return; }
+    if (/failed to fetch|networkerror|no connection|server busy|load failed/i.test(why || '')) {
+      coolStep = Math.min(4, coolStep + 1);
+      var wait = Math.min(180, 45 * coolStep) * 1000;
+      coolUntil = Math.max(coolUntil, Date.now() + wait);
+      lastLoadError = 'the map servers are not answering (' + (why || 'no connection') + '), pausing ' + Math.round(wait / 1000) + ' s';
+    }
+  }
   var nextServer = 0;   // each request starts on the next server, so several at once spread out
   var skipHooks = [], skipping = false, skippedKeys = {};   // "Skip this area" cancels the running load and puts the area on a skip list
   function skipLoading() { skipping = true; skipHooks.slice().forEach(function (h) { h(); }); setTimeout(function () { skipping = false; }, 150); }
@@ -1363,9 +1427,15 @@
       });
       return chain.then(function () { return [].concat.apply([], out); });
     }
-    var run = startSplit && depth < 2 ? pieces() :
-      fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000).then(function (json) { return json.elements || []; })
-        .catch(function (e) { if (e && e.message === 'skipped') throw e; lastLoadError = e && e.message || ''; denseBoxes[id] = true; if (depth >= 2) throw e; return pieces(); });
+    // every chunk is requested as four smaller squares (about 3.6 km), and a square that still fails is cut into four again, down to about 1 km (three levels)
+    var run = (depth === 0 || startSplit) && depth < 3 ? pieces() :
+      waitCool().then(function () { return fetchOverpass(TGOsm.buildQuery(b, depth ? 40 : 55), depth ? 45000 : 60000); }).then(function (json) { noteServerResult(true); return json.elements || []; })
+        .catch(function (e) {
+          if (e && e.message === 'skipped') throw e;
+          var why = e && e.message || '';
+          if (/failed to fetch|networkerror|no connection|server busy|load failed/i.test(why)) { noteServerResult(false, why); throw e; }   // a network problem is not a sign the square is too heavy: do not cut it up
+          lastLoadError = why; denseBoxes[id] = true; if (depth >= 3) throw e; return pieces();
+        });
     return run.then(function (els) { if (depth) pieceCache.set(id, els); return els; });
   }
   function fetchChunkElements(key) {

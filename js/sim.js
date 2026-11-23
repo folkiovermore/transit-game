@@ -33,9 +33,11 @@
     transferMin: 5,
     waitMin: 4,
     minStationGapM: 40,
-    maxVehicles: 60,
+    maxVehicles: 150,
     bankruptDays: 3,
     maxBlocks: 1500,
+    growthCap: 4,              // a block can grow to this many times its size when it appeared
+    growthServedBonus: 1.5,    // the ceiling is this much higher while a working stop is within reach
     longRate: 0.04,            // share of residents who make a long-distance trip each day
     longGravityM: 120000,      // how quickly long-distance demand falls off with distance
     longMinM: 25000,           // trips shorter than this are covered by the local model
@@ -110,7 +112,8 @@
     var st = {
       v: 1, seed: seed | 0, day: 1, balance: BAL.startBalance, lifetimePax: 0, negDays: 0, over: false,
       center: center, mpp: mpp, nextId: 1,
-      stations: [], lines: [], blocks: [], stats: null, history: [], source: 'generated', chunks: {}
+      stations: [], lines: [], blocks: [], stats: null, history: [], source: 'generated', chunks: {},
+      gv: 2   // growth ceiling in force from the start (older saves have no gv and are converted on the first day)
     };
     if (world) { st.wy0 = world.wy0; st.wsz = world.wsz; st.cos0 = Math.cos(center.lat * Math.PI / 180); st.popScale = world.popScale; st.jobScale = world.jobScale; }
     if (blocks && blocks.length) { st.blocks = blocks.slice(); st.source = 'osm'; }
@@ -463,11 +466,16 @@
   function grow(state) {
     var r = rng(state);
     var reach = reachList(state);
+    // Saves from before the growth ceiling (v50): every block stops growing where it is (cap 0). Blocks from then on get a ceiling.
+    if (!state.gv) { state.blocks.forEach(function (b) { if (b.cap === undefined) { b.cap = 0; b.jcap = 0; } }); state.gv = 2; state.legacy = 1; }
     state.blocks.forEach(function (b) {
+      if (b.cap === undefined) { b.cap = b.pop * BAL.growthCap; b.jcap = b.jobs * BAL.growthCap; }   // a new block may grow to 4x its size when it appeared
+      if (b.cap === 0) return;
       var served = nearestReach(b, reach) !== null;
-      var g = (0.003 + r() * 0.006) * (served ? 2.2 : 1);
-      b.pop *= 1 + g;
-      b.jobs *= 1 + g * 0.8;
+      var g = (0.003 + r() * 0.006) * (served ? 2.2 : 1), bonus = served ? BAL.growthServedBonus : 1;
+      // logistic: growth slows as the block nears its ceiling (50% higher ceiling near a working stop)
+      b.pop *= 1 + g * Math.max(0, 1 - b.pop / (b.cap * bonus));
+      b.jobs *= 1 + g * 0.8 * Math.max(0, 1 - b.jobs / (b.jcap * bonus));
     });
     if (state.blocks.length < BAL.maxBlocks) {
       var spawns = 1 + (r() < 0.4 ? 1 : 0);
