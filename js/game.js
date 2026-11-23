@@ -1432,7 +1432,14 @@
     function pieces() {
       var out = [], chain = Promise.resolve();
       splitBox(b).forEach(function (q, qi) {
-        chain = chain.then(function () { if (tr.stack) { tr.stack.length = depth; tr.stack[depth] = qi + 1; } return fetchBox(q, depth + 1, false, tr); }).then(function (els) { out.push(els); if (tr.stack && depth === 0) tr.done = qi + 1; });
+        chain = chain.then(function () {
+          if (depth === 0 && tr.doneParts && tr.doneParts[qi]) { out.push([]); tr.done = qi + 1; return null; }   // this quarter was saved by an earlier try
+          if (tr.stack) { tr.stack.length = depth; tr.stack[depth] = qi + 1; }
+          return fetchBox(q, depth + 1, false, tr).then(function (els) {
+            if (depth === 0 && tr.onPiece) { tr.onPiece(qi, els, q); out.push([]); } else out.push(els);   // v56: a finished quarter is saved at once
+            if (tr.stack && depth === 0) tr.done = qi + 1;
+          });
+        });
       });
       return chain.then(function () { return [].concat.apply([], out); });
     }
@@ -1448,8 +1455,9 @@
     return run.then(function (els) { if (depth) pieceCache.set(id, els); return els; });
   }
   var jobs = {};   // live progress of the area being loaded: pieces done, what is being asked, last error (shown in the Map data card)
-  function fetchChunkElements(key) {
+  function fetchChunkElements(key, hooks) {
     var tr = jobs[key] = { t0: Date.now(), stack: [], done: 0, tries: 0, host: '', err: '', errAt: 0, reqAt: 0 };
+    if (hooks) { tr.doneParts = hooks.doneParts; tr.onPiece = hooks.onPiece; }
     return fetchBox(TGOsm.chunkBox(key), 0, false, tr).then(function (r) { delete jobs[key]; return r; }, function (e) { delete jobs[key]; throw e; });
   }
   function jobText(k) {
@@ -1595,19 +1603,30 @@
     inFlight[keys[0]] = true; skipping = false;
     setLoadTag(bulk.on && bulk.left ? 'Loading map data, ' + bulk.left + ' areas left…' : 'Loading homes and jobs…');
     if (ui.sheet === 'save') renderSheet();
-    return fetchKeysElements(keys).then(function (els) {
-      if (st !== state) return;
-      var added = 0;
-      keys.forEach(function (k) {
-        var bnd = chunkPxBounds(k);
-        var blocks = TGOsm.buildChunkBlocks(els, projFn, mppAt(bnd.midLat), bnd, { popScale: st.popScale, jobScale: st.jobScale });
+    // v56: each finished quarter of an area (about 3.6 km) is turned into homes and jobs and saved straight away; the area counts as loaded when all four are in.
+    // If a later quarter fails, the earlier ones stay and a retry only asks for the missing ones.
+    var k0 = keys[0], addedAny = 0;
+    if (!st.parts) st.parts = {};
+    var doneParts = {}; for (var qi0 = 0; qi0 < 4; qi0++) if (st.parts[k0 + '#' + qi0]) doneParts[qi0] = true;
+    function finishStats() { if (addedAny && st === state) { addedAny = 0; st.stats = S.computeNetwork(st); updateHud(); scheduleSave(); } }
+    return fetchChunkElements(k0, {
+      doneParts: doneParts,
+      onPiece: function (qi, els, box) {
+        if (st !== state) return;
+        var a = projFn(box.n, box.w), c2 = projFn(box.s, box.e), bnd = { x0: Math.min(a.x, c2.x), y0: Math.min(a.y, c2.y), x1: Math.max(a.x, c2.x), y1: Math.max(a.y, c2.y) };
+        var blocks = TGOsm.buildChunkBlocks(els, projFn, mppAt((box.s + box.n) / 2), bnd, { popScale: st.popScale, jobScale: st.jobScale });
         blocks.forEach(function (b) { st.blocks.push(b); });
-        added += blocks.length;
-        st.chunks[k] = 1;
-      });
-      if (added) { st.stats = S.computeNetwork(st); updateHud(); scheduleSave(); }
+        st.parts[k0 + '#' + qi] = 1; addedAny += blocks.length + 1;
+        scheduleSave();
+      }
+    }).then(function () {
+      if (st !== state) return;
+      st.chunks[k0] = 1;
+      for (var q1 = 0; q1 < 4; q1++) delete st.parts[k0 + '#' + q1];
+      addedAny += 1; finishStats();
     }).catch(function (e) {
-      if (e && e.message === 'skipped') { keys.forEach(function (k) { skippedKeys[k] = true; }); toast('Skipped this area. You can load it later from the Menu.', 3500); return; }
+      if (e && e.message === 'skipped') { finishStats(); keys.forEach(function (k) { skippedKeys[k] = true; }); toast('Skipped this area. You can load it later from the Menu.', 3500); return; }
+      finishStats();
       keys.forEach(function (k) { chunkFailed[k] = Date.now(); });
       toast('Could not load homes and jobs' + (lastLoadError ? ' (' + lastLoadError + ')' : '') + '. Will retry.', 4500);
       clearTimeout(chunkTimer); chunkTimer = setTimeout(ensureView, 95000);
