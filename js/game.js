@@ -1348,11 +1348,20 @@
     { url: 'https://overpass.kumi.systems/api/interpreter' },
     { url: 'https://overpass.private.coffee/api/interpreter' },
     { url: 'https://z.overpass-api.de/api/interpreter' },
-    { url: 'https://ovp.dresel.systems/api/interpreter', box: { s: 36, n: 71, w: -11, e: 32 } }
+    { url: 'https://ovp.dresel.systems/api/interpreter', boxes: [{ s: 36, n: 71, w: -11, e: 24 }, { s: 36, n: 46, w: 24, e: 32 }, { s: 62, n: 67, w: -25, e: -11 }] },   // Europe without western Russia, plus Iceland
+    // v62: the same operator runs one server per continent (Geofabrik extracts). The rectangles are deliberately cautious and stay clear of the borders between extracts.
+    { url: 'https://ovp.dresel.systems/api-as/interpreter', boxes: [
+      { s: 29.6, n: 33.3, w: 34.2, e: 36.5 },   // Israel and the nearby Levant
+      { s: 12, n: 30, w: 44, e: 60 },           // Arabian peninsula and the Gulf
+      { s: 8, n: 30, w: 68, e: 92 },            // India and neighbours
+      { s: 20, n: 40, w: 100, e: 142 },         // eastern Asia
+      { s: -8, n: 20, w: 96, e: 125 }           // south-east Asia
+    ] },
+    { url: 'https://ovp.dresel.systems/api-na/interpreter', boxes: [{ s: 19, n: 50, w: -125, e: -88 }] }   // Mexico and the USA
   ];
   function serversFor(b) {
-    if (!b) return OVERPASS.filter(function (x) { return !x.box; });
-    return OVERPASS.filter(function (x) { return !x.box || (b.s >= x.box.s && b.n <= x.box.n && b.w >= x.box.w && b.e <= x.box.e); });
+    if (!b) return OVERPASS.filter(function (x) { return !x.boxes; });
+    return OVERPASS.filter(function (x) { return !x.boxes || x.boxes.some(function (r) { return b.s >= r.s && b.n <= r.n && b.w >= r.w && b.e <= r.e; }); });
   }
   var lastLoadError = '';
   var coolUntil = 0, coolStep = 0;   // when every server fails to answer, pause for a while instead of hammering them (45 s, then 90 s, up to 3 min)
