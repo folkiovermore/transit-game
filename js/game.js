@@ -845,11 +845,14 @@
   function restoreData(data, msg) {
     var st = data && data.state;
     if (!st || st.v !== 1 || !st.center || !Array.isArray(st.stations) || !Array.isArray(st.lines) || !Array.isArray(st.blocks)) return toast('That is not a Transit Game save.');
-    Store.put('main', JSON.stringify(data)).then(function (ok) {
-      if (!ok) return toast('Could not store it in this browser.');
+    var raw = JSON.stringify(data);
+    // v63: if the browser says no (usually it is out of space because the older copies are 10 MB each), delete the older copies and try again;
+    // if it still says no, start the game anyway from memory and say so, instead of refusing to load.
+    Store.put('main', raw).then(function (ok) { return ok ? ok : freeSnapshots().then(function () { return Store.put('main', raw); }); }).then(function (ok) {
       ui.dayProg = data.dayProg || 0;
       beginGame(st, data.view);
-      toast(msg + ' Day ' + st.day + '.');
+      if (ok) toast(msg + ' Day ' + st.day + '.');
+      else { saveFailed = true; toast(msg + ' Day ' + st.day + '. But this browser would not store it (' + (Store.lastError || 'no space') + '), so it is only in memory: download a backup from the Menu before you close the page.', 12000); }
     });
   }
   function restoreSnapshot(slot) {
@@ -1280,12 +1283,23 @@
     } catch (e) { return Promise.resolve(); }
     var day = state.day, p = Store.put('main', raw).then(function (ok) {
       if (ok) { ui.lastSaved = Date.now(); saveFailed = false; if (ui.sheet === 'save') renderSheet(); }
-      else if (!saveFailed) { saveFailed = true; toast('Could not save in this browser. Download a backup from the Save button.', 6000); }
+      else if (!saveFailed) {
+        saveFailed = true;
+        // out of space? the older copies are the biggest thing we store, so drop them and try the main save once more
+        freeSnapshots().then(function () { return Store.put('main', raw); }).then(function (ok2) {
+          if (ok2) { saveFailed = false; ui.lastSaved = Date.now(); toast('Browser storage was full, so the older copies were deleted. The game is saved.', 5000); }
+          else toast('Could not save in this browser (' + (Store.lastError || 'no space') + '). Download a backup from the Menu.', 8000);
+        });
+      }
     });
     if (Date.now() - lastSnap > 5 * 60 * 1000) { lastSnap = Date.now(); p = p.then(function () { return writeSnapshot(raw, day); }); }
     return p;
   }
 
+  function freeSnapshots() {
+    ui.snaps = [];
+    return Promise.all(['snap0', 'snap1', 'snap2', 'snapmeta'].map(function (k) { return Store.del(k); }));
+  }
   /* A few older copies of the save, so a mistake can be undone. */
   function readMeta() { return Store.get('snapmeta').then(function (m) { try { return m ? JSON.parse(m) : { n: 0, list: [] }; } catch (e) { return { n: 0, list: [] }; } }); }
   function writeSnapshot(raw, day) {

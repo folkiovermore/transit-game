@@ -43,7 +43,7 @@
     return backend().then(function (b) {
       if (b === 'idb') return tx('readwrite', function (s) { return s.put(val, key); }).then(function () { return true; });
       root.localStorage.setItem(LS + key, val); return true;
-    }).catch(function () { mem[key] = val; return false; });
+    }).catch(function (e) { mem[key] = val; api.lastError = (e && (e.name || e.message)) || 'unknown'; return false; });
   }
   function del(key) {
     delete mem[key];
@@ -58,7 +58,7 @@
     return Promise.resolve(false);
   }
 
-  var api = { get: get, put: put, del: del, persist: persist, backend: backend };
+  var api = { get: get, put: put, del: del, persist: persist, backend: backend, lastError: '' };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TGStore = api;
 })(typeof window !== 'undefined' ? window : globalThis);

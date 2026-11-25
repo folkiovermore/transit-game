@@ -229,28 +229,43 @@
     var D0c = BAL.gravityM / state.mpp;                 // grid size only; the exact scale is worked out per origin
     var potential = 0, captured = 0;
     var CELL = D0c * 1.5, grid = new Map(), NB = state.blocks.length;
-    // flat arrays and numeric keys keep this loop fast; it is the most expensive part of the day
-    var bx = new Float64Array(NB), by = new Float64Array(NB), bjw = new Float64Array(NB), bst = new Int32Array(NB);
-    var stIdx = new Map(), stIds = [];
+    // flat arrays and numeric keys keep this loop fast; it is the most expensive part of the day.
+    // v63: blocks that sit in the same small square (about 0.12 of the distance scale, roughly 500 m) and use the same stop are added together
+    // before the gravity sum, so a dense city with tens of thousands of blocks costs a few thousand sums instead (about 10x faster on a day-888 save, riders change by well under 1%).
+    var MC = Math.max(1, D0c * 0.12);
+    var stIdx = new Map(), stIds = [], bst = new Int32Array(NB);
     for (var hi0 = 0; hi0 < NB; hi0++) {
-      var bb = state.blocks[hi0];
-      bx[hi0] = bb.x; by[hi0] = bb.y; bjw[hi0] = bb.jobs * spotMult[hi0];
       var hs = homeSt[hi0];
       if (hs === null) bst[hi0] = -1;
       else { var si0 = stIdx.get(hs); if (si0 === undefined) { si0 = stIds.length; stIdx.set(hs, si0); stIds.push(hs); } bst[hi0] = si0; }
-      if (!(bb.jobs > 0)) continue;
-      var k = (Math.floor(bb.x / CELL) + 200000) * 400009 + (Math.floor(bb.y / CELL) + 200000);
-      var g = grid.get(k); if (!g) { g = []; grid.set(k, g); }
-      g.push(hi0);
     }
-    var nearIdx = new Int32Array(NB), nearW = new Float64Array(NB);
-    var acc = new Float64Array(stIds.length), touched = new Int32Array(stIds.length);
-    state.blocks.forEach(function (h, hi) {
-      var trips = h.pop * BAL.tripRate * fx.demand * spotMult[hi];
-      potential += trips;
-      var so = homeSt[hi];
-      if (so === null) return;
-      var D0 = BAL.gravityM / mScale(state, h.y), invD0 = 1 / D0, hx = h.x, hy = h.y;
+    var NS = stIds.length;
+    function mkey(x, y, si) { return ((Math.floor(x / MC) + 200000) * 400009 + (Math.floor(y / MC) + 200000)) * (NS + 1) + (si + 1); }
+    var jAgg = new Map(), hAgg = new Map();
+    for (var bi = 0; bi < NB; bi++) {
+      var bb = state.blocks[bi], sm = spotMult[bi], si1 = bst[bi];
+      var k1 = mkey(bb.x, bb.y, si1);
+      var jw = bb.jobs * sm;   // jobs away from every stop still count as destinations people could have chosen (si = -1), they just cannot be reached
+      if (jw > 0) { var ja = jAgg.get(k1); if (!ja) { ja = { x: 0, y: 0, w: 0, si: si1 }; jAgg.set(k1, ja); } ja.x += bb.x * jw; ja.y += bb.y * jw; ja.w += jw; }
+      if (si1 < 0) { potential += bb.pop * BAL.tripRate * fx.demand * sm; continue; }   // homes not near any stop: potential only
+      var tr = bb.pop * BAL.tripRate * fx.demand * sm;
+      potential += tr;
+      var ha = hAgg.get(k1); if (!ha) { ha = { x: 0, y: 0, t: 0, si: si1 }; hAgg.set(k1, ha); }
+      ha.x += bb.x * tr; ha.y += bb.y * tr; ha.t += tr;
+    }
+    var NJ = jAgg.size, bx = new Float64Array(NJ), by = new Float64Array(NJ), bjw = new Float64Array(NJ), jst = new Int32Array(NJ), jq = 0;
+    jAgg.forEach(function (ja) {
+      bx[jq] = ja.x / ja.w; by[jq] = ja.y / ja.w; bjw[jq] = ja.w; jst[jq] = ja.si;
+      var k = (Math.floor(bx[jq] / CELL) + 200000) * 400009 + (Math.floor(by[jq] / CELL) + 200000);
+      var g = grid.get(k); if (!g) { g = []; grid.set(k, g); }
+      g.push(jq); jq++;
+    });
+    var nearIdx = new Int32Array(NJ + 1), nearW = new Float64Array(NJ + 1);
+    var acc = new Float64Array(NS), touched = new Int32Array(NS);
+    hAgg.forEach(function (h) {
+      if (!(h.t > 0)) return;
+      var hx = h.x / h.t, hy = h.y / h.t, trips = h.t, soI = h.si, so = stIds[soI];
+      var D0 = BAL.gravityM / mScale(state, hy), invD0 = 1 / D0;
       var cx = Math.floor(hx / CELL), cy = Math.floor(hy / CELL), nn = 0, wsum = 0;
       for (var gx = cx - 4; gx <= cx + 4; gx++) for (var gy = cy - 4; gy <= cy + 4; gy++) {
         // skip cells so far away that their weight is below 0.3% of a block next door
@@ -266,9 +281,9 @@
         }
       }
       if (wsum <= 0) return;
-      var soI = stIdx.get(so), nt = 0, scale = trips / wsum;
+      var nt = 0, scale = trips / wsum;
       for (var n = 0; n < nn; n++) {
-        var sdI = bst[nearIdx[n]];
+        var sdI = jst[nearIdx[n]];
         if (sdI < 0 || sdI === soI) continue;
         if (acc[sdI] === 0) touched[nt++] = sdI;
         acc[sdI] += nearW[n];
