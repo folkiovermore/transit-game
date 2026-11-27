@@ -16,6 +16,45 @@
   MODES.coach = { name: 'Coach', speed: 70, cap: 50, trackKm: 120000, platform: 40000, vehicle: 260000, vehicleDay: 420, maintKmDay: 25, minSpacingM: 5000, dwellMin: 6, catchM: 1500, unlockPax: 75000 };
   MODES.plane = { name: 'Plane', speed: 650, cap: 180, trackKm: 3000, platform: 20000000, platDay: 15000, vehicle: 15000000, vehicleDay: 60000, fareMult: 0.2, maintKmDay: 0, minSpacingM: 150000, dwellMin: 35, catchM: 25000, unlockPax: 3000000, straight: true };
   MODES.bus.vlen = 1.7; MODES.coach.vlen = 2.4; MODES.plane.vlen = 3.4; MODES.tram.vlen = 2.2; MODES.lightrail.vlen = 2.6; MODES.metro.vlen = 2.8; MODES.rail.vlen = 3.2; MODES.intercity.vlen = 3.6; MODES.ferry.vlen = 2.4;
+  /* v68: vehicle types. A whole line uses one type. k scales the vehicle price and its daily cost; len scales the drawing.
+     The type marked base matches the old numbers, so existing lines are unchanged until you switch. */
+  var TIERS = {
+    bus: [{ name: 'Midibus', cap: 45, k: 0.7, len: 0.8 }, { name: 'Single-decker', cap: 80, k: 1, base: true }, { name: 'Double-decker', cap: 100, k: 1.3, len: 1.05 }, { name: 'Bendy bus', cap: 130, k: 1.5, len: 1.45 }, { name: 'Double bendy bus', cap: 180, k: 2, len: 1.9 }],
+    coach: [{ name: 'Midi coach', cap: 35, k: 0.75, len: 0.8 }, { name: 'Coach', cap: 50, k: 1, base: true }, { name: 'Double-deck coach', cap: 80, k: 1.4, len: 1.05 }],
+    tram: [{ name: 'Short tram (30 m)', cap: 150, k: 0.8, len: 0.8 }, { name: 'Tram (40 m)', cap: 200, k: 1, base: true }, { name: 'Long tram (55 m)', cap: 300, k: 1.4, len: 1.35 }, { name: 'Two coupled trams', cap: 400, k: 1.9, len: 1.8 }],
+    lightrail: [{ name: '2 cars', cap: 260, k: 0.7, len: 0.7 }, { name: '3 cars', cap: 400, k: 1, base: true }, { name: '4 cars', cap: 530, k: 1.3, len: 1.3 }],
+    metro: [{ name: '4 cars', cap: 550, k: 0.7, len: 0.7 }, { name: '6 cars', cap: 800, k: 1, base: true }, { name: '8 cars', cap: 1100, k: 1.35, len: 1.3 }, { name: '10 cars', cap: 1350, k: 1.65, len: 1.6 }],
+    rail: [{ name: '3 cars', cap: 350, k: 0.6, len: 0.6 }, { name: '6 cars', cap: 600, k: 1, base: true }, { name: '8 cars', cap: 800, k: 1.3, len: 1.3 }, { name: '12 cars', cap: 1200, k: 1.9, len: 1.8 }],
+    intercity: [{ name: '5 cars', cap: 400, k: 0.6, len: 0.65 }, { name: '9 cars', cap: 700, k: 1, base: true }, { name: '12 cars', cap: 900, k: 1.25, len: 1.3 }, { name: 'Double-deck pair', cap: 1100, k: 1.5, len: 1.6 }],
+    ferry: [{ name: 'Water bus', cap: 100, k: 0.4, len: 0.6 }, { name: 'Passenger ferry', cap: 300, k: 1, base: true }, { name: 'Large ferry', cap: 800, k: 2, len: 1.4 }, { name: 'Cruise ferry', cap: 1800, k: 3.5, len: 1.9 }],
+    plane: [{ name: 'Embraer E175', cap: 88, k: 0.55, len: 0.75 }, { name: '737-800 / A320', cap: 180, k: 1, base: true }, { name: '737 MAX 10 / A321neo', cap: 220, k: 1.15, len: 1.15 }, { name: 'A330 / 787', cap: 300, k: 1.7, len: 1.35 }, { name: 'A380', cap: 520, k: 2.7, len: 1.6 }]
+  };
+  function baseTier(mode) { var t = TIERS[mode] || []; for (var i = 0; i < t.length; i++) if (t[i].base) return i; return 0; }
+  function tierOf(line) {
+    var t = TIERS[line.mode];
+    if (!t) return { name: MODES[line.mode].name, cap: MODES[line.mode].cap, k: 1, base: true };
+    var i = line.tier === undefined ? baseTier(line.mode) : line.tier;
+    return t[Math.max(0, Math.min(t.length - 1, i))];
+  }
+  function vehCap(line) { var m = MODES[line.mode], t = tierOf(line); return t.base ? m.cap : t.cap; }
+  function vehPrice(line) { return MODES[line.mode].vehicle * tierOf(line).k; }
+  function vehDay(line) { return MODES[line.mode].vehicleDay * tierOf(line).k; }
+  /* Switches the whole fleet of a line to another type: buys the new vehicles and sells the old ones at half price. */
+  function setTier(state, lineId, idx) {
+    var line = lineById(state, lineId), t = line && TIERS[line.mode];
+    if (!t || idx < 0 || idx >= t.length) return { ok: false, msg: 'No such vehicle type' };
+    var cur = line.tier === undefined ? baseTier(line.mode) : line.tier;
+    if (idx === cur) return { ok: false, msg: 'Already using that type' };
+    var cost = tierSwitchCost(line, idx);
+    if (cost > 0 && state.balance < cost) return { ok: false, msg: 'Need ' + fmtMoney(cost) };
+    state.balance -= cost; line.tier = idx;
+    return { ok: true, cost: cost };
+  }
+  function tierSwitchCost(line, idx) {
+    var m = MODES[line.mode], t = TIERS[line.mode];
+    return line.vehicles * (m.vehicle * t[idx].k - 0.5 * vehPrice(line));
+  }
+
   var MODE_ORDER = ['bus', 'tram', 'lightrail', 'coach', 'rail', 'metro', 'intercity', 'ferry', 'plane'];
 
   var BAL = {
@@ -31,6 +70,8 @@
     peakHours: 3,
     operHours: 18,
     transferMin: 5,
+    walkM: 350,          // v67: stops this close count as an interchange: people walk between them
+    walkSpeed: 80,       // metres a minute, about 5 km/h
     waitMin: 4,
     minStationGapM: 40,
     maxVehicles: 150,
@@ -104,7 +145,7 @@
   }
   function peakCapacity(state, line, sMap) {
     var m = MODES[line.mode];
-    return line.vehicles * m.cap * BAL.peakHours / roundTripHours(state, line, sMap);
+    return line.vehicles * vehCap(line) * BAL.peakHours / roundTripHours(state, line, sMap);
   }
 
   /* ---------- state ---------- */
@@ -159,6 +200,37 @@
       if (d <= R.r && d < bd) { bd = d; best = R.id; }
     }
     return best;
+  }
+
+  /* v67: pairs of stops on working lines that are close enough to walk between (and are not the same stop).
+     Returns [{ a, b, m }] with the walking distance in metres. */
+  function walkLinks(state, sMap, lines) {
+    if (!(BAL.walkM > 0)) return [];
+    sMap = sMap || stationMap(state);
+    lines = lines || state.lines.filter(function (L) { return L.stations.length >= 2; });
+    var on = {}, ids = [];
+    var lof = {};
+    lines.forEach(function (L) { L.stations.forEach(function (id) { if (!on[id]) { on[id] = 1; ids.push(id); } (lof[id] || (lof[id] = {}))[L.id] = 1; }); });
+    function share(a, b) { for (var k in lof[a]) if (lof[b][k]) return true; return false; }   // stops on the same line are already joined by it
+    var grid = new Map(), out = [];
+    ids.forEach(function (id) {
+      var st = sMap.get(id); if (!st) return;
+      var cell = BAL.walkM / mScale(state, st.y), k = Math.floor(st.x / cell) + ',' + Math.floor(st.y / cell);
+      (grid.get(k) || grid.set(k, []).get(k)).push(st);
+    });
+    ids.forEach(function (id) {
+      var a = sMap.get(id); if (!a) return;
+      var cell = BAL.walkM / mScale(state, a.y), cx = Math.floor(a.x / cell), cy = Math.floor(a.y / cell);
+      for (var gx = cx - 1; gx <= cx + 1; gx++) for (var gy = cy - 1; gy <= cy + 1; gy++) {
+        var list = grid.get(gx + ',' + gy); if (!list) continue;
+        list.forEach(function (b) {
+          if (b.id <= a.id || share(a.id, b.id)) return;
+          var d = Math.hypot(a.x - b.x, a.y - b.y) * mScale(state, (a.y + b.y) / 2);
+          if (d <= BAL.walkM) out.push({ a: a.id, b: b.id, m: Math.round(d) });
+        });
+      }
+    });
+    return out;
   }
 
   /* How much of the population and the jobs lie within walking distance of a stop on a working line. */
@@ -221,6 +293,13 @@
       for (var x = 0; x < list.length; x++) for (var y = 0; y < list.length; y++) {
         if (x !== y) addEdge(list[x], list[y], BAL.transferMin, null);
       }
+    });
+    // walking between stops that are close together: a change of line with a short walk on top
+    var walks = walkLinks(state, sMap, lines.filter(function (L) { return !fx.strike[L.id]; }));
+    walks.forEach(function (wl) {
+      if (fx.closed[wl.a] || fx.closed[wl.b]) return;
+      var A = atStation.get(wl.a) || [], B = atStation.get(wl.b) || [], w = BAL.transferMin + wl.m / BAL.walkSpeed;
+      A.forEach(function (x) { B.forEach(function (y) { addEdge(x, y, w, null); addEdge(y, x, w, null); }); });
     });
 
     // trips between stations (gravity model between homes and jobs)
@@ -426,7 +505,7 @@
     var stats = { lines: {}, riders: 0, revenue: 0, cost: 0, profit: 0, waiting: {}, potentialTrips: potential, edgeLoad: {} };
     lines.forEach(function (L) {
       var m = MODES[L.mode], info = lineInfo.get(L.id);
-      var cost = (L.vehicles * m.vehicleDay + info.lenKm * m.maintKmDay) * fx.cost + L.stations.length * (m.platDay || BAL.platformDay);
+      var cost = (L.vehicles * vehDay(L) + info.lenKm * m.maintKmDay) * fx.cost + L.stations.length * (m.platDay || BAL.platformDay);
       stats.lines[L.id] = { riders: 0, revenue: 0, cost: cost, profit: 0, load: 0 };
     });
     state.lines.forEach(function (L) {
@@ -473,6 +552,7 @@
     stats.cost += state.stations.length * BAL.stationDay;
     stats.profit = stats.revenue - stats.cost;
     stats.captured = captured;
+    stats.walk = walks;
     stats._day = state.day; stats._nb = state.blocks.length; stats._nl = state.lines.length;
     return stats;
   }
@@ -590,6 +670,11 @@
     return { ok: true, id: line.id };
   }
 
+  /* v65: a loop line repeats its first station at the end (A B C D A), so every edge, length, route and drawing works unchanged.
+     It needs at least three different stops. */
+  function isLoop(line) { var n = line.stations.length; return n >= 4 && line.stations[0] === line.stations[n - 1]; }
+  function stopCount(line) { return isLoop(line) ? line.stations.length - 1 : line.stations.length; }
+
   function lineById(state, id) {
     return state.lines.find(function (L) { return L.id === id; });
   }
@@ -609,6 +694,17 @@
     if (!line) return { ok: false, msg: 'No line selected' };
     var sMap = stationMap(state), station = sMap.get(stationId);
     if (!station) return { ok: false, msg: 'No station there' };
+    if (isLoop(line)) return { ok: false, msg: 'This line is a loop. Use Insert a stop, or open the loop first.' };
+    var n0 = line.stations.length;
+    if (n0 >= 3 && (stationId === line.stations[0] || stationId === line.stations[n0 - 1])) {
+      // tapping one end of the line while extending the other closes it into a loop
+      var first = sMap.get(line.stations[0]), last = sMap.get(line.stations[n0 - 1]), m0 = MODES[line.mode];
+      var ck = edgeM(state, last, first, m0.straight) / 1000, cc = ck * m0.trackKm;
+      if (state.balance < cc) return { ok: false, msg: 'Need ' + fmtMoney(cc) + ' to close the loop' };
+      state.balance -= cc;
+      line.stations.push(line.stations[0]); line.flips.push(false); line.lastAdd = 'close';
+      return { ok: true, cost: cc, note: 'Loop closed', loop: true };
+    }
     if (line.stations.indexOf(stationId) >= 0) return { ok: false, msg: 'Already on this line' };
     var front = !!atStart && line.stations.length >= 2;
     var m = MODES[line.mode];
@@ -625,9 +721,9 @@
     line.lastAdd = front ? 'start' : 'end';
     var note = null;
     if (line.stations.length === 2 && line.vehicles === 0) {
-      var buy = Math.min(2, Math.floor(state.balance / m.vehicle));
+      var buy = Math.min(2, Math.floor(state.balance / vehPrice(line)));
       line.vehicles = buy;
-      state.balance -= buy * m.vehicle;
+      state.balance -= buy * vehPrice(line);
       note = buy ? 'Bought ' + buy + ' vehicles' : 'No money left for vehicles';
     }
     return { ok: true, cost: res.cost, note: note };
@@ -662,6 +758,7 @@
     var line = lineById(state, lineId);
     if (!line || !line.stations.length) return { ok: false, msg: 'Nothing to undo' };
     var sMap = stationMap(state), m = MODES[line.mode];
+    if (isLoop(line)) return openLoop(state, lineId, 1);
     var front = line.lastAdd === 'start' && line.stations.length > 1;
     var n = line.stations.length;
     var refund = m.platform;
@@ -673,8 +770,20 @@
     if (front) { line.stations.shift(); line.flips.shift(); }
     else { line.stations.pop(); if (n > 1) line.flips.pop(); }
     state.balance += refund;
-    if (line.stations.length < 2 && line.vehicles) { state.balance += line.vehicles * m.vehicle; line.vehicles = 0; }
+    if (line.stations.length < 2 && line.vehicles) { state.balance += line.vehicles * vehPrice(line); line.vehicles = 0; }
     return { ok: true };
+  }
+
+  /* Turns a loop back into an ordinary line by taking away the closing section. share = part of its track refunded. */
+  function openLoop(state, lineId, share) {
+    var line = lineById(state, lineId);
+    if (!line || !isLoop(line)) return { ok: false, msg: 'Not a loop' };
+    var sMap = stationMap(state), m = MODES[line.mode], n = line.stations.length;
+    var km = edgeM(state, sMap.get(line.stations[n - 2]), sMap.get(line.stations[0]), m.straight) / 1000;
+    line.stations.pop(); line.flips.pop(); line.lastAdd = 'end';
+    var refund = (share === undefined ? 0.5 : share) * km * m.trackKm;
+    state.balance += refund;
+    return { ok: true, refund: refund };
   }
 
   /* Takes a stop off a line (any position). The station itself stays on the map. Needs at least two stops to remain.
@@ -687,6 +796,17 @@
     if (line.stations.length <= 2) return { ok: false, msg: 'A line needs two stops. Delete the line instead.' };
     var sMap = stationMap(state), m = MODES[line.mode], n = line.stations.length;
     function km(i, j) { return edgeM(state, sMap.get(line.stations[i]), sMap.get(line.stations[j]), m.straight) / 1000; }
+    if (isLoop(line)) {
+      if (n - 1 <= 3) return { ok: false, msg: 'A loop needs three stops. Open the loop first.' };
+      var fr = k === 0 ? Math.max(0, km(n - 2, 0) + km(0, 1) - km(n - 2, 1)) : Math.max(0, km(k - 1, k) + km(k, k + 1) - km(k - 1, k + 1));
+      var rf = 0.5 * (m.platform + fr * m.trackKm);
+      if (k === 0) {   // the stop where the loop joins: the next stop becomes the joining point
+        line.stations = line.stations.slice(1, n - 1); line.stations.push(line.stations[0]);
+        line.flips = line.flips.slice(1, n - 2); line.flips.push(false);
+      } else { line.stations.splice(k, 1); line.flips.splice(k - 1, 2, false); }
+      state.balance += rf;
+      return { ok: true, refund: rf };
+    }
     var freed = 0;
     if (k === 0) freed = km(0, 1);
     else if (k === n - 1) freed = km(n - 2, n - 1);
@@ -704,11 +824,12 @@
     if (!line || line.stations.length < 2) return { ok: false, msg: 'Add at least two stops first' };
     if (delta > 0) {
       if (line.vehicles >= BAL.maxVehicles) return { ok: false, msg: 'Maximum of ' + BAL.maxVehicles + ' vehicles reached' };
-      if (state.balance < m.vehicle) return { ok: false, msg: 'Need ' + fmtMoney(m.vehicle) };
-      state.balance -= m.vehicle; line.vehicles += 1;
+      var vp = vehPrice(line);
+      if (state.balance < vp) return { ok: false, msg: 'Need ' + fmtMoney(vp) };
+      state.balance -= vp; line.vehicles += 1;
     } else {
       if (line.vehicles <= 1) return { ok: false, msg: 'Keep at least one vehicle' };
-      state.balance += m.vehicle * 0.5; line.vehicles -= 1;
+      state.balance += vehPrice(line) * 0.5; line.vehicles -= 1;
     }
     return { ok: true };
   }
@@ -733,7 +854,7 @@
   function deleteLine(state, lineId) {
     var line = lineById(state, lineId);
     if (!line) return { ok: false };
-    state.balance += line.vehicles * MODES[line.mode].vehicle * 0.5;
+    state.balance += line.vehicles * vehPrice(line) * 0.5;
     state.lines = state.lines.filter(function (L) { return L.id !== lineId; });
     return { ok: true };
   }
@@ -760,6 +881,8 @@
     addStation: addStation, removeStation: removeStation, startLine: startLine, addStopToLine: addStopToLine,
     undoLastStop: undoLastStop, insertStopInLine: insertStopInLine, removeStopFromLine: removeStopFromLine, setVehicles: setVehicles, setVehicleCount: setVehicleCount, deleteLine: deleteLine, reverseLine: reverseLine,
     toggleFlip: toggleFlip, lineById: lineById, stationMap: stationMap, edgeLenPx: edgeLenPx, edgeLenFor: edgeLenFor,
+    TIERS: TIERS, tierOf: tierOf, baseTier: baseTier, vehCap: vehCap, vehPrice: vehPrice, vehDay: vehDay, setTier: setTier, tierSwitchCost: tierSwitchCost,
+    isLoop: isLoop, stopCount: stopCount, openLoop: openLoop, walkLinks: walkLinks,
     lineLenPx: lineLenPx, roundTripHours: roundTripHours, peakCapacity: peakCapacity, stopCost: stopCost,
     fmtMoney: fmtMoney, reachList: reachList, setHooks: function (h) { HOOKS = h || {}; }, getFx: getFx
   };

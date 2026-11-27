@@ -222,6 +222,19 @@
   }
 
   /* ---------- goals ---------- */
+  var CONTINENT = {};
+  [['Europe', 'AD AL AT BA BE BG BY CH CY CZ DE DK EE ES FI FO FR GB GG GI GR HR HU IE IM IS IT JE LI LT LU LV MC MD ME MK MT NL NO PL PT RO RS RU SE SI SK SM UA VA XK'],
+   ['Asia', 'AE AF AM AZ BD BH BN BT CN GE HK ID IL IN IQ IR JO JP KG KH KP KR KW KZ LA LB LK MM MN MO MV MY NP OM PH PK PS QA SA SG SY TH TJ TL TM TR TW UZ VN YE'],
+   ['North America', 'AG BB BS BZ CA CR CU DM DO GD GT HN HT JM KN LC MX NI PA PR SV TT US VC'],
+   ['South America', 'AR BO BR CL CO EC GY PE PY SR UY VE'],
+   ['Africa', 'AO BF BI BJ BW CD CF CG CI CM CV DJ DZ EG ER ET GA GH GM GN GQ GW KE KM LR LS LY MA MG ML MR MU MW MZ NA NE NG RW SC SD SL SN SO SS ST SZ TD TG TN TZ UG ZA ZM ZW'],
+   ['Oceania', 'AU FJ NZ PG SB VU WS TO']].forEach(function (c) { c[1].split(' ').forEach(function (k) { CONTINENT[k] = c[0]; }); });
+  function pickUsed(state, m, filter) {
+    var c = Object.keys(m.modeCount).filter(filter || function () { return true; });
+    return c.length ? c[Math.floor(rnd(state) * c.length) % c.length] : null;
+  }
+  function modeName(k) { return MODES[k].name.toLowerCase(); }
+
   function ensureGoals(state) {
     if (!state.goals) state.goals = { active: [], done: [], count: 0, failed: 0, earned: 0, nextId: 1 };
     ensureEv(state);
@@ -230,7 +243,8 @@
 
   function metrics(state) {
     var lines = working(state), sMap = S.stationMap(state);
-    var m = { lines: lines.length, maxKm: 0, modes: {}, ccs: [], stationsWithCc: 0, maxLineProfit: 0, allBus: lines.length > 0, maxLoad: 0, stuck: 0, vehicles: 0, maxHub: 0, planeRiders: 0, profitable: 0, stops: 0, maxStops: 0, crossBorder: false, kmMode: {}, named: 0, maxLineRiders: 0, waiting: 0, reachPop: 0, reachJobs: 0, totalPop: 0, totalJobs: 0 };
+    var m = { lines: lines.length, maxKm: 0, modes: {}, ccs: [], stationsWithCc: 0, maxLineProfit: 0, allBus: lines.length > 0, maxLoad: 0, stuck: 0, vehicles: 0, maxHub: 0, planeRiders: 0, profitable: 0, stops: 0, maxStops: 0, crossBorder: false, kmMode: {}, named: 0, maxLineRiders: 0, waiting: 0, reachPop: 0, reachJobs: 0, totalPop: 0, totalJobs: 0, maxLoopStops: 0, modeHub: 0, airHub: 0, modeCount: {}, modeFleet: {}, modeRiders: {}, groundKm: 0, netModes: 0, conts: [] };
+    var stModes = {}, stPlanes = {};
     var hubCount = {};
     var stats = state.stats || { lines: {}, riders: 0, profit: 0 };
     var ids = [], seen = {};
@@ -238,11 +252,20 @@
       m.maxKm = Math.max(m.maxKm, S.lineLenM(state, L, sMap) / 1000);
       m.modes[L.mode] = true; m.vehicles += L.vehicles;
       var lkm = S.lineLenM(state, L, sMap) / 1000;
-      m.kmMode[L.mode] = Math.max(m.kmMode[L.mode] || 0, lkm); m.maxStops = Math.max(m.maxStops, L.stations.length);
+      m.kmMode[L.mode] = Math.max(m.kmMode[L.mode] || 0, lkm); m.maxStops = Math.max(m.maxStops, S.stopCount ? S.stopCount(L) : L.stations.length);
       var lcc = [];
       L.stations.forEach(function (sid) { var q = sMap.get(sid); if (q && q.cc && lcc.indexOf(q.cc) < 0) lcc.push(q.cc); });
-      if (lcc.length >= 2) m.crossBorder = true;
+      if (lcc.length >= 2) { m.crossBorder = true; if (L.mode !== 'plane') m.groundBorder = true; }
       L.stations.forEach(function (sid) { hubCount[sid] = (hubCount[sid] || 0) + 1; m.maxHub = Math.max(m.maxHub, hubCount[sid]); });
+      // v66 goal data
+      if (S.isLoop && S.isLoop(L)) m.maxLoopStops = Math.max(m.maxLoopStops, S.stopCount(L));
+      m.modeCount[L.mode] = (m.modeCount[L.mode] || 0) + 1;
+      m.modeFleet[L.mode] = (m.modeFleet[L.mode] || 0) + L.vehicles;
+      if (L.mode !== 'plane') m.groundKm += lkm;
+      L.stations.forEach(function (sid) {
+        var o = stModes[sid] || (stModes[sid] = {}); o[L.mode] = 1; m.modeHub = Math.max(m.modeHub, Object.keys(o).length);
+        if (L.mode === 'plane') { stPlanes[sid] = (stPlanes[sid] || 0) + 1; m.airHub = Math.max(m.airHub, stPlanes[sid]); }
+      });
       if (L.mode !== 'bus') m.allBus = false;
       var ls = stats.lines[L.id];
       if (ls) {
@@ -250,6 +273,7 @@
         if (ls.profit > 0) m.profitable++;
         if (L.mode === 'plane') m.planeRiders = Math.max(m.planeRiders, ls.riders);
         m.maxLineRiders = Math.max(m.maxLineRiders, ls.riders);
+        m.modeRiders[L.mode] = Math.max(m.modeRiders[L.mode] || 0, ls.riders);
         if (ls.load >= 0.95 && L.vehicles >= S.BAL.maxVehicles) m.stuck++;     // full and cannot take more vehicles
       }
       L.stations.forEach(function (id) {
@@ -260,6 +284,16 @@
       });
     });
     m.stops = ids.length;
+    m.ccs.forEach(function (cc) { var ct = CONTINENT[cc]; if (ct && m.conts.indexOf(ct) < 0) m.conts.push(ct); });
+    // modes joined into one network by shared stations
+    var np = {};
+    function nf(a) { while (np[a] !== undefined && np[a] !== a) a = np[a]; return a; }
+    lines.forEach(function (L) { var r0 = nf(L.stations[0]); if (np[r0] === undefined) np[r0] = r0; L.stations.forEach(function (sid) { var r = nf(sid); if (np[r] === undefined) np[r] = r; if (r !== r0) np[r] = r0; }); });
+    var wlk = (state.stats && state.stats.walk) || [];
+    wlk.forEach(function (w) { if (np[w.a] === undefined || np[w.b] === undefined) return; var ra = nf(w.a), rb = nf(w.b); if (ra !== rb) np[rb] = ra; });
+    var netM = {};
+    lines.forEach(function (L) { var r = nf(L.stations[0]); (netM[r] || (netM[r] = {}))[L.mode] = 1; });
+    Object.keys(netM).forEach(function (r) { m.netModes = Math.max(m.netModes, Object.keys(netM[r]).length); });
     state.stations.forEach(function (q) { if (q.custom) m.named++; });
     var wt = state.stats && state.stats.waiting;
     if (wt) Object.keys(wt).forEach(function (k) { m.waiting += wt[k] || 0; });
@@ -452,6 +486,76 @@
       var N = m.stops + 8;
       return { kind: 'contract', title: 'Open 8 new stops within 15 days', desc: 'Have ' + N + ' stops on working lines (you have ' + m.stops + ' now). No penalty if you miss it.', target: N, days: 15, reward: round5k(base * 1.4) };
     },
+    // ---- v66: more goals for big networks ----
+    loop: function (state, m, base) {
+      if (m.lines < 2) return null;
+      var N = Math.max(6, m.maxLoopStops + 4);
+      return { kind: 'build', title: (m.maxLoopStops ? 'A bigger loop: ' : 'Build a loop line: ') + N + ' stops', desc: 'One line closed into a circle with at least ' + N + ' stops (while adding stops, tap the stop at the other end). Think circle lines like Madrid 6 or the Glasgow Subway.', target: N, reward: round5k(base * 1.3) };
+    },
+    modehub: function (state, m, base) {
+      var open = S.MODE_ORDER.filter(function (k) { return S.isUnlocked(state, k); }).length;
+      var N = Math.max(2, m.modeHub + 1);
+      if (m.lines < 2 || N > open) return null;
+      return { kind: 'build', title: 'Interchange: ' + N + ' modes at one stop', desc: 'One station served by lines of ' + N + ' different modes, like a big city terminal. Best now: ' + m.modeHub + '.', target: N, reward: round5k(base * 1.3) };
+    },
+    continents: function (state, m, base) {
+      if (!m.conts.length || m.conts.length >= 6) return null;
+      var N = m.conts.length + 1;
+      return { kind: 'build', title: 'Run lines on ' + N + ' continents', desc: 'Stops on working lines in ' + N + ' different continents. You are on ' + m.conts.join(', ') + '.', target: N, reward: round5k(base * 3.0) };
+    },
+    airhub: function (state, m, base) {
+      if (!m.modes.plane) return null;
+      var N = Math.max(2, m.airHub + 1);
+      return { kind: 'build', title: 'Hub airport: ' + N + ' routes from one airport', desc: 'One airport stop served by ' + N + ' plane lines. Best now: ' + m.airHub + '.', target: N, reward: round5k(base * 1.5) };
+    },
+    modefleet: function (state, m, base) {
+      var k = pickUsed(state, m);
+      if (!k) return null;
+      var cur = m.modeFleet[k] || 0, T = Math.ceil((cur * 1.3 + 5) / 5) * 5;
+      return { kind: 'numbers', title: 'Run ' + num(T) + ' ' + modeName(k) + ' vehicles', desc: 'All your ' + modeName(k) + ' vehicles together. ' + num(cur) + ' now.', mode: k, target: T, reward: round5k(base * 1.0) };
+    },
+    moderiders: function (state, m, base) {
+      var FLOOR = { bus: 2000, tram: 5000, lightrail: 8000, coach: 1000, rail: 10000, metro: 20000, intercity: 3000, ferry: 1000 };
+      var k = pickUsed(state, m, function (q) { return q !== 'plane'; });
+      if (!k) return null;
+      var T = niceRound(Math.max(FLOOR[k] || 1000, (m.modeRiders[k] || 0) * 1.4));
+      return { kind: 'numbers', title: 'A ' + modeName(k) + ' line with ' + num(T) + ' riders a day', desc: 'Get one ' + modeName(k) + ' line this busy. Best now: ' + num(m.modeRiders[k] || 0) + '.', mode: k, target: T, reward: round5k(base * 1.2) };
+    },
+    modecount: function (state, m, base) {
+      var k = pickUsed(state, m, function (q) { return q !== 'bus'; });
+      if (!k) return null;
+      var N = (m.modeCount[k] || 0) + 1;
+      return { kind: 'build', title: 'Run ' + N + ' ' + modeName(k) + ' lines', desc: 'Working ' + modeName(k) + ' lines at the same time. ' + (m.modeCount[k] || 0) + ' now.', mode: k, target: N, reward: round5k(base * 1.1) };
+    },
+    groundkm: function (state, m, base) {
+      if (!m.lines || m.groundKm < 5) return null;
+      var T = niceUp(m.groundKm * 1.25);
+      return { kind: 'build', title: num(T) + ' km of routes on the ground', desc: 'All your lines together, flights not counted (water routes count). ' + num(m.groundKm) + ' km now.', target: T, reward: round5k(base * 1.2) };
+    },
+    netmodes: function (state, m, base) {
+      var open = S.MODE_ORDER.filter(function (k) { return S.isUnlocked(state, k); }).length;
+      var N = Math.max(3, m.netModes + 1);
+      if (m.lines < 2 || N > open) return null;
+      return { kind: 'build', title: N + ' modes in one connected network', desc: 'Lines of ' + N + ' different modes joined by shared stations or a short walk, so people can change between all of them. Best now: ' + m.netModes + '.', target: N, reward: round5k(base * 1.4) };
+    },
+    longflight: function (state, m, base) {
+      if (!m.modes.plane) return null;
+      var cur = m.kmMode.plane || 0, X = Math.ceil(Math.max(1000, cur * 1.15, cur + 500) / 500) * 500;
+      if (X > 15000) return null;   // the longest real flights are about 15,000 km
+      return { kind: 'build', title: 'Fly ' + num(X) + ' km nonstop', desc: 'One plane line at least ' + num(X) + ' km long. Longest now: ' + num(cur) + ' km.', target: X, reward: round5k(base * 1.6) };
+    },
+    rescue: function (state, m, base) {
+      var stl = (state.stats && state.stats.lines) || {}, worst = null;
+      working(state).forEach(function (L) { var ls = stl[L.id]; if (ls && L.vehicles && (!worst || ls.profit < worst.p)) worst = { L: L, p: ls.profit }; });
+      if (!worst || m.lines < 4) return null;
+      var T = round5k(Math.max(10000, worst.p * 2 + 10000));
+      return { kind: 'contract', title: 'Turn around ' + (worst.L.name || 'your weakest line') + ' within 20 days', desc: 'Get this line to ' + money(T) + ' profit a day (it makes ' + money(worst.p) + ' now). More stops, better places or fewer vehicles all help. No penalty if you miss it.', lineId: worst.L.id, target: T, days: 20, reward: round5k(base * 1.6) };
+    },
+    quickplace: function (state, m, base) {
+      if (!m.lines) return null;
+      var N = m.places + 1;
+      return { kind: 'contract', title: 'A line in a new place within 20 days', desc: 'Have ' + N + ' separate places (networks not joined by a line, 15+ km apart). No penalty if you miss it.', target: N, days: 20, reward: round5k(base * 1.8) };
+    },
     starline: function (state, m, base) {
       if (!m.lines) return null;
       var T = Math.max(3000, round5k(m.maxLineProfit * 1.5));
@@ -507,6 +611,22 @@
         break;
       case 'quickbal': f = state.balance / g.target; text = money(state.balance) + ' of ' + money(g.target); break;
       case 'quickprofit': f = st.profit / g.target; text = money(st.profit) + ' of ' + money(g.target) + ' a day'; break;
+      case 'loop': f = m.maxLoopStops / g.target; text = m.maxLoopStops ? 'Biggest loop: ' + m.maxLoopStops + ' of ' + g.target + ' stops' : 'No loop yet'; break;
+      case 'modehub': f = m.modeHub / g.target; text = 'Best stop: ' + m.modeHub + ' of ' + g.target + ' modes'; break;
+      case 'continents': f = m.conts.length / g.target; text = m.conts.length + ' of ' + g.target + ' continents'; break;
+      case 'airhub': f = m.airHub / g.target; text = 'Best airport: ' + m.airHub + ' of ' + g.target + ' routes'; break;
+      case 'modefleet': { var fl = m.modeFleet[g.mode] || 0; f = fl / g.target; text = num(fl) + ' of ' + num(g.target) + ' vehicles'; break; }
+      case 'moderiders': { var mr = m.modeRiders[g.mode] || 0; f = mr / g.target; text = 'Best ' + modeName(g.mode) + ' line: ' + num(mr) + ' of ' + num(g.target) + ' a day'; break; }
+      case 'modecount': { var mc2 = m.modeCount[g.mode] || 0; f = mc2 / g.target; text = mc2 + ' of ' + g.target + ' ' + modeName(g.mode) + ' lines'; break; }
+      case 'groundkm': f = m.groundKm / g.target; text = num(m.groundKm) + ' of ' + num(g.target) + ' km'; break;
+      case 'netmodes': f = m.netModes / g.target; text = 'Best network: ' + m.netModes + ' of ' + g.target + ' modes'; break;
+      case 'longflight': { var pk = m.kmMode.plane || 0; f = pk / g.target; text = num(pk) + ' of ' + num(g.target) + ' km'; break; }
+      case 'rescue': {
+        var rl = S.lineById(state, g.lineId), rs = st.lines && st.lines[g.lineId];
+        if (!rl) { f = 0; bad = 'That line was deleted'; text = 'Line gone'; break; }
+        var rp = rs ? rs.profit : 0; f = rp / g.target; text = money(rp) + ' of ' + money(g.target) + ' a day'; break;
+      }
+      case 'quickplace': f = m.places / g.target; text = m.places + ' of ' + g.target + ' places'; break;
       case 'starline': f = m.maxLineProfit / g.target; text = money(m.maxLineProfit) + ' of ' + money(g.target) + ' a day'; break;
     }
     if (!isFinite(f) || f < 0) f = 0;
@@ -530,6 +650,9 @@
       var haveKinds = G.active.map(function (g) { return g.kind; });
       var keys = Object.keys(MAKERS).filter(function (k) { return haveKeys.indexOf(k) < 0 && k !== G.avoidKey; });
       if (!keys.length) break;
+      // v66: avoid the last 12 goal types you finished, missed or skipped, so the same ones do not keep coming back
+      var recent = G.recent || [], notRecent = keys.filter(function (k) { return recent.indexOf(k) < 0; });
+      if (notRecent.length >= 3) keys = notRecent;
       // prefer a kind that is not shown yet, and not the one just completed
       var fresh = keys.filter(function (k) { var kd = kindOf(k); return haveKinds.indexOf(kd) < 0 && kd !== G.lastKind; });
       var pool = fresh.length ? fresh : keys;
@@ -537,6 +660,11 @@
       while (!g && tries.length) {
         var k = tries.splice(Math.floor(rnd(state) * tries.length) % tries.length, 1)[0];
         g = makeGoal(state, k, m);
+      }
+      if (!g) {   // nothing in the preferred group fits this game right now: try every other type, then the recent ones too
+        var rest = Object.keys(MAKERS).filter(function (q) { return haveKeys.indexOf(q) < 0 && pool.indexOf(q) < 0; });
+        rest.sort(function (a, b) { return (recent.indexOf(a) >= 0) - (recent.indexOf(b) >= 0); });
+        while (!g && rest.length) g = makeGoal(state, rest.shift(), m);
       }
       if (!g) break;
       g.id = G.nextId++;
@@ -546,7 +674,8 @@
     }
     return added;
   }
-  function kindOf(key) { return { linelen: 'build', places: 'build', countries: 'build', lines: 'build', modeline: 'build', pax: 'numbers', dailyriders: 'numbers', profit: 'numbers', balance: 'numbers', spot: 'contract', ridersoon: 'contract', busonly: 'challenge', allprofit: 'challenge', airline: 'challenge', starline: 'challenge', hub: 'build', fleet: 'numbers', stops: 'build', modemix: 'build', longstops: 'build', crossborder: 'build', modekm: 'build', namer: 'build', reachpop: 'numbers', reachjobs: 'numbers', busyline: 'numbers', waiting: 'challenge', quickbal: 'contract', quickprofit: 'contract', quickstops: 'contract' }[key]; }
+  function remember(G, key) { if (!G.recent) G.recent = []; G.recent.unshift(key); if (G.recent.length > 12) G.recent.length = 12; }
+  function kindOf(key) { return { linelen: 'build', places: 'build', countries: 'build', lines: 'build', modeline: 'build', pax: 'numbers', dailyriders: 'numbers', profit: 'numbers', balance: 'numbers', spot: 'contract', ridersoon: 'contract', busonly: 'challenge', allprofit: 'challenge', airline: 'challenge', starline: 'challenge', hub: 'build', fleet: 'numbers', stops: 'build', modemix: 'build', longstops: 'build', crossborder: 'build', modekm: 'build', namer: 'build', reachpop: 'numbers', reachjobs: 'numbers', busyline: 'numbers', waiting: 'challenge', quickbal: 'contract', quickprofit: 'contract', quickstops: 'contract', loop: 'build', modehub: 'build', continents: 'build', airhub: 'build', modefleet: 'numbers', moderiders: 'numbers', modecount: 'build', groundkm: 'build', netmodes: 'build', longflight: 'build', rescue: 'contract', quickplace: 'contract' }[key]; }
 
   /* Drop a goal you do not want, free. A different one takes its place. */
   function skip(state, id) {
@@ -554,7 +683,7 @@
     if (!g) return null;
     G.active = G.active.filter(function (q) { return q.id !== id; });
     G.skipped = (G.skipped || 0) + 1;
-    G.avoidKey = g.key;
+    G.avoidKey = g.key; remember(G, g.key);
     refill(state);
     G.avoidKey = null;
     return g;
@@ -569,12 +698,12 @@
       var p = progress(state, g, m);
       if (p.done) {
         state.balance += g.reward;
-        G.count++; G.earned += g.reward; G.lastKind = g.kind;
+        G.count++; G.earned += g.reward; G.lastKind = g.kind; remember(G, g.key);
         G.done.unshift({ title: g.title, reward: g.reward, day: state.day });
         if (G.done.length > 25) G.done.pop();
         out.push({ type: 'goal', goal: g });
       } else if (g.deadline !== undefined && state.day > g.deadline) {
-        G.failed++; G.lastKind = g.kind;
+        G.failed++; G.lastKind = g.kind; remember(G, g.key);
         if (!G.missed) G.missed = [];
         G.missed.unshift({ title: g.title, day: state.day });
         if (G.missed.length > 25) G.missed.pop();
@@ -586,10 +715,74 @@
     return out;
   }
 
+  /* ---------- v68b: achievements, permanent badges kept in state.ach = { id: day } ---------- */
+  var ACH = [];
+  function tierAch(group, icon, list, get, unit) {
+    list.forEach(function (t, i) { ACH.push({ id: group + i, group: group, icon: icon, title: t[1], desc: t[2] || '', target: t[0], get: get, unit: unit || '' }); });
+  }
+  function oneAch(group, id, icon, title, desc, test) { ACH.push({ id: id, group: group, icon: icon, title: title, desc: desc, test: test }); }
+  function achLine(state, f) { return working(state).some(function (L) { return L.vehicles > 0 && f(L); }); }
+  function topTier(mode) { return function (state) { return achLine(state, function (L) { var t = S.TIERS && S.TIERS[mode]; return L.mode === mode && t && L.tier === t.length - 1; }); }; }
+  var GROUPS = [['pax', 'Passengers carried'], ['riders', 'Riders a day'], ['profit', 'Profit a day'], ['bal', 'Savings'], ['lines', 'Lines'], ['stops', 'Stops'], ['ctry', 'Countries'], ['cont', 'Continents'], ['reach', 'People near a stop'], ['days', 'Time'], ['goals', 'Goals done'], ['net', 'Network'], ['fleet', 'Fleet'], ['far', 'Distance']];
+  tierAch('pax', '🎟', [[1e6, 'First million', 'Carry 1 million passengers in total'], [1e7, 'Ten million'], [1e8, 'Hundred million'], [1e9, 'A billion journeys'], [1e10, 'Ten billion journeys']], function (state) { return state.lifetimePax || 0; });
+  tierAch('riders', '👥', [[1e4, 'Busy town', '10,000 riders in one day'], [1e5, 'Big city'], [1e6, 'Million a day'], [5e6, 'Five million a day']], function (state) { return state.stats ? state.stats.riders : 0; });
+  tierAch('profit', '💶', [[1e5, 'In the money', '€100k profit in one day'], [1e6, 'A million a day'], [1e7, 'Ten million a day'], [1e8, 'Hundred million a day'], [1e9, 'A billion a day']], function (state) { return state.stats ? state.stats.profit : 0; }, '€');
+  tierAch('bal', '🏦', [[1e6, 'Millionaire', '€1 million in the bank'], [1e8, 'Rich'], [1e9, 'Billionaire'], [1e10, 'Ten billion'], [1e11, 'Hundred billion']], function (state) { return state.balance; }, '€');
+  tierAch('lines', '〰', [[5, 'A real network', '5 lines running'], [10, 'Ten lines'], [25, 'Twenty-five lines'], [50, 'Fifty lines'], [100, 'A hundred lines']], function (state, m) { return m.lines; });
+  tierAch('stops', '⦿', [[50, 'Fifty stops', '50 stops on working lines'], [100, 'A hundred stops'], [250, '250 stops'], [500, '500 stops'], [1000, 'A thousand stops']], function (state, m) { return m.stops; });
+  tierAch('ctry', '🗺', [[2, 'Going abroad', 'Lines in 2 countries'], [5, 'Five flags'], [10, 'Ten countries'], [15, 'Fifteen countries'], [25, 'Twenty-five countries']], function (state, m) { return m.ccs.length; });
+  tierAch('cont', '🌍', [[2, 'Two continents', 'Lines on 2 continents'], [3, 'Three continents'], [4, 'Four continents'], [5, 'Five continents'], [6, 'Around the world', 'Lines on every inhabited continent']], function (state, m) { return m.conts.length; });
+  tierAch('reach', '🏘', [[1e5, 'Neighbourhood', '100,000 people live near a stop'], [1e6, 'A million in reach'], [1e7, 'Ten million in reach'], [5e7, 'Fifty million in reach']], function (state, m) { return m.reachPop; });
+  tierAch('days', '📅', [[120, 'First year', 'Run for a whole game year (120 days)'], [365, 'Day 365'], [1000, 'Day 1,000'], [2000, 'Veteran', 'Day 2,000']], function (state) { return state.day; });
+  tierAch('goals', '🏁', [[10, 'Goal getter', 'Finish 10 goals'], [50, 'Fifty goals'], [100, 'A hundred goals'], [250, 'Goal machine', 'Finish 250 goals']], function (state) { return (state.goals && state.goals.count) || 0; });
+  oneAch('net', 'allmodes', '🚦', 'Every mode', 'Run at least one line of every mode at the same time', function (state, m) { return S.MODE_ORDER.every(function (k) { return m.modes[k]; }); });
+  oneAch('net', 'loop', '⭕', 'Full circle', 'Run a loop line', function (state, m) { return m.maxLoopStops > 0; });
+  oneAch('net', 'walk', '🚶', 'Mind the gap', 'Have a walking interchange between two lines', function (state) { return !!(state.stats && state.stats.walk && state.stats.walk.length); });
+  oneAch('net', 'hub5', '✳', 'Grand interchange', 'One stop served by 5 lines', function (state, m) { return m.maxHub >= 5; });
+  oneAch('net', 'modes4', '🔀', 'Integrated network', '4 modes joined in one network', function (state, m) { return m.netModes >= 4; });
+  oneAch('net', 'border', '🛂', 'No passport needed', 'A line on the ground or water that crosses a border', function (state, m) { return !!m.groundBorder; });
+  oneAch('net', 'black', '✅', 'All in the black', 'Every line makes money, with 20 lines or more', function (state, m) { return m.lines >= 20 && m.profitable === m.lines; });
+  oneAch('net', 'stops40', '🛑', 'Stopping service', 'One line with 40 stops', function (state, m) { return m.maxStops >= 40; });
+  oneAch('net', 'airhub', '🛫', 'Hub airport', 'One airport with 5 routes', function (state, m) { return m.airHub >= 5; });
+  oneAch('fleet', 'full', '🚌', 'Full fleet', 'A line with 150 vehicles', function (state) { return achLine(state, function (L) { return L.vehicles >= S.BAL.maxVehicles; }); });
+  oneAch('fleet', 'a380', '✈', 'Superjumbo', 'A plane line flying the A380', topTier('plane'));
+  oneAch('fleet', 'bendy', '🪗', 'Double bendy', 'A bus line with double bendy buses', topTier('bus'));
+  oneAch('fleet', 'cruise', '🛳', 'Cruise ferry', 'A ferry line with cruise ferries', topTier('ferry'));
+  oneAch('fleet', 'metro10', '🚇', 'Ten-car metro', 'A metro line with 10-car trains', topTier('metro'));
+  oneAch('fleet', 'small', '🚐', 'Small is beautiful', 'A line that makes money with the smallest vehicle type', function (state) { var st = state.stats || { lines: {} }; return achLine(state, function (L) { return L.tier === 0 && S.TIERS && S.TIERS[L.mode] && st.lines[L.id] && st.lines[L.id].profit > 0; }); });
+  oneAch('far', 'km100', '📏', 'Long line', 'A ground line 100 km long', function (state, m) { return Object.keys(m.kmMode).some(function (k) { return k !== 'plane' && m.kmMode[k] >= 100; }); });
+  oneAch('far', 'fly5000', '🌐', 'Long haul', 'A flight of 5,000 km', function (state, m) { return (m.kmMode.plane || 0) >= 5000; });
+  oneAch('far', 'fly10000', '🌏', 'Ultra long haul', 'A flight of 10,000 km', function (state, m) { return (m.kmMode.plane || 0) >= 10000; });
+
+  var DESC = { pax: '{n} passengers carried in total', riders: '{n} riders in one day', profit: '€{n} profit in one day', bal: '€{n} in the bank', lines: '{n} lines running', stops: '{n} stops on working lines', ctry: 'Lines in {n} countries', cont: 'Lines on {n} continents', reach: '{n} people live near a stop', days: 'Reach day {n}', goals: 'Finish {n} goals' };
+  function big(v) { return v >= 1e9 ? (v / 1e9) + ' billion' : v >= 1e6 ? (v / 1e6) + ' million' : v >= 1e5 && v % 1000 === 0 ? (v / 1000) + 'k' : num(v); }
+  function achDone(state, a, m) { return a.test ? !!a.test(state, m) : a.get(state, m) >= a.target; }
+  function checkAch(state, m) {
+    m = m || metrics(state);
+    var first = !state.ach, out = [], n = 0;
+    if (!state.ach) state.ach = {};
+    ACH.forEach(function (a) {
+      if (state.ach[a.id]) return;
+      if (achDone(state, a, m)) { state.ach[a.id] = state.day; n++; if (!first) out.push({ type: 'ach', ach: a }); }
+    });
+    if (first && n) out.push({ type: 'achBulk', count: n });
+    return out;
+  }
+  function achList(state) {
+    var m = metrics(state);
+    return ACH.map(function (a) {
+      var v = a.get ? a.get(state, m) : null;
+      return { id: a.id, group: a.group, icon: a.icon, title: a.title, desc: a.get ? DESC[a.group].replace('{n}', big(a.target)) : a.desc, day: state.ach && state.ach[a.id], frac: a.get ? Math.max(0, Math.min(1, v / a.target)) : null, now: v, target: a.target, unit: a.unit };
+    });
+  }
+
+  var checkGoals = check;
+  check = function (state) { var out = checkGoals(state); return out.concat(checkAch(state)); };
+
   S.setHooks({ fx: fx, events: eventsDaily, goals: check });
 
   var api = {
-    ensure: ensureGoals, check: check, skip: skip, progress: progress, metrics: metrics, fx: fx, seasonOf: seasonOf, SEASONS: SEASONS,
+    ensure: ensureGoals, check: function (s) { return check(s); }, achList: achList, ACH_GROUPS: GROUPS, checkAch: checkAch, skip: skip, progress: progress, metrics: metrics, fx: fx, seasonOf: seasonOf, SEASONS: SEASONS,
     activeEvents: activeEvents, spawnEvent: spawnEvent, EVENT_TYPES: EVENT_TYPES, GOAL_TYPES: Object.keys(MAKERS), makeGoal: function (state, key) { return makeGoal(state, key, metrics(state)); }, YEAR: YEAR
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

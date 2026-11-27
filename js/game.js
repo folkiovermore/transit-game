@@ -246,16 +246,18 @@
       if (!g || g.path.length < 2 || !L.vehicles) return;
       var m = MODES[L.mode];
       if (ui.speed > 0 && !state.over) g.t += dt * ui.speed * m.speed * 4 / (2 * Math.max(40, g.baseLen));
+      var loop = S.isLoop(L);
       var load = state.stats && state.stats.lines[L.id] ? Math.min(1, state.stats.lines[L.id].load) : 0;
       if (!ui.view.vehicles || !lineShown(L)) return;
       var nDraw = Math.min(L.vehicles, 60);   // big fleets are drawn as at most 60 vehicles per line, evenly spread, to keep the map smooth
       for (var i = 0; i < nDraw; i++) {
-        var ph = ((g.t + i / nDraw) % 1 + 1) % 1;
-        var u = ph < 0.5 ? ph * 2 : 2 - ph * 2;
+        var ph = ((g.t + i / nDraw) % 1 + 1) % 1, u, back;
+        if (loop) { var p2 = (ph * 2) % 1; back = i % 2 === 1; u = back ? 1 - p2 : p2; }   // loops: vehicles go round, half of them each way
+        else { back = ph >= 0.5; u = ph < 0.5 ? ph * 2 : 2 - ph * 2; }
         var pt = R.pointAlong(g.path, u * g.len);
-        var ang = pt.ang + (ph < 0.5 ? 0 : Math.PI);
+        var ang = pt.ang + (back ? Math.PI : 0);
         var p = toScreen(pt);
-        var len = lw * (m.vlen || 2.8), wid = lw * 1.3;
+        var len = lw * (m.vlen || 2.8) * (S.tierOf(L).len || 1), wid = lw * 1.3;
         ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(ang);
         drawVehicleShape(L.mode, len, wid, L.color, load);
         ctx.restore();
@@ -361,7 +363,9 @@
       ctx.setLineDash([4, 3]); ctx.lineWidth = 3; ctx.strokeStyle = L.color; ctx.stroke(); ctx.setLineDash([]);
       return;
     }
+    if (S.isLoop(L)) return;
     var front = pickEnd(L, target);
+    if (snap && L.stations.length >= 3 && (snap.id === L.stations[0] || snap.id === L.stations[L.stations.length - 1])) front = snap.id !== L.stations[0];   // closing a loop: draw from the other end
     var from = sMap.get(L.stations[front ? 0 : L.stations.length - 1]);
     var g = gfx.get(L.id), prevDir = null;
     if (g && g.base.length >= 2) {
@@ -374,6 +378,21 @@
     ctx.setLineDash([4, 3]); ctx.lineWidth = 3; ctx.strokeStyle = L.color; ctx.stroke(); ctx.setLineDash([]);
   }
 
+  function drawWalks() {   // v67: dotted white links between stops close enough to walk between
+    var wl = state.stats && state.stats.walk;
+    if (!wl || !wl.length || V.s < 0.5) return;
+    var sMap = S.stationMap(state), vis = shownStations();
+    ctx.save(); ctx.setLineDash([2, 4]); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    wl.forEach(function (w) {
+      var a = sMap.get(w.a), b = sMap.get(w.b);
+      if (!a || !b || !stationVisible(vis, a.id) || !stationVisible(vis, b.id)) return;
+      var pa = toScreen(a), pb = toScreen(b);
+      if (Math.max(pa.x, pb.x) < -20 || Math.min(pa.x, pb.x) > V.w + 20 || Math.max(pa.y, pb.y) < -20 || Math.min(pa.y, pb.y) > V.h + 20) return;
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   function drawStations() {
     var r0 = stationRadius();
     var perStation = new Map();
@@ -382,7 +401,7 @@
     });
     var showNames = ui.view.names && V.s >= 0.9, vis = shownStations();
     var editEnds = null, eL = ui.editing ? S.lineById(state, ui.editing) : null;
-    if (eL && eL.stations.length) editEnds = { color: eL.color, ids: [eL.stations[0], eL.stations[eL.stations.length - 1]] };
+    if (eL && eL.stations.length && !S.isLoop(eL)) editEnds = { color: eL.color, ids: [eL.stations[0], eL.stations[eL.stations.length - 1]] };
     state.stations.forEach(function (s) {
       var p = toScreen(s);
       if (p.x < -40 || p.y < -40 || p.x > V.w + 40 || p.y > V.h + 40) return;
@@ -435,6 +454,7 @@
     drawLines();
     drawVehicles(dt);
     drawPreview();
+    drawWalks();
     drawStations();
   }
 
@@ -534,7 +554,7 @@
     }
     ui.hint = false;
     if (created) queueName(sid);
-    toast('Stop added, ' + fmt(res.cost + (created ? BAL.stationCost : 0)) + (res.note ? '. ' + res.note : ''));
+    toast(res.loop ? 'Loop closed, ' + fmt(res.cost) : 'Stop added, ' + fmt(res.cost + (created ? BAL.stationCost : 0)) + (res.note ? '. ' + res.note : ''));
     afterChange();
   }
 
@@ -549,7 +569,7 @@
     ui.renamingStation = false; ui.selStation = id; ui.selLine = null; ui.sheet = 'station'; renderSheet(); renderDock();
   }
   function selectLine(id) {
-    ui.renaming = false; ui.pickingColor = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
+    ui.renaming = false; ui.pickingColor = false; ui.pickingTier = false; ui.selLine = id; ui.selStation = null; ui.sheet = 'line'; renderSheet();
   }
 
   function setLineColor(c) {
@@ -641,6 +661,8 @@
       else if (ev.type === 'goalExpired') toast('Contract ran out: ' + ev.goal.title, 4200);
       else if (ev.type === 'event') toast((ev.event.good ? 'Good news: ' : 'Trouble: ') + ev.event.title, 5200);
       else if (ev.type === 'eventEnd') toast('Over: ' + ev.event.title, 3000);
+      else if (ev.type === 'ach') toast('🏆 Achievement: ' + ev.ach.title + ' ' + ev.ach.icon, 5200);
+      else if (ev.type === 'achBulk') toast('🏆 ' + ev.count + ' achievements unlocked from your progress so far. See Goals > Achievements.', 6500);
     });
     if (ui.sheet === 'goals') renderSheet();
   }
@@ -692,7 +714,7 @@
       var L = S.lineById(state, ui.editing);
       if (!L) { b.className = 'banner hidden'; return; }
       b.className = 'banner';
-      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + lineName(L) + ' (' + MODES[L.mode].name.toLowerCase() + '). ' + (ui.insertMode ? 'Insert mode: tap the map or an existing station and it joins the nearest part of the line.' : 'Tap the map near either end of the line to extend it, or tap an existing station.') + '</span>' +
+      b.innerHTML = '<span class="dot" style="background:' + L.color + '"></span><span class="btxt">' + lineName(L) + ' (' + MODES[L.mode].name.toLowerCase() + '). ' + (ui.insertMode ? 'Insert mode: tap the map or an existing station and it joins the nearest part of the line.' : (S.isLoop(L) ? 'This line is a loop. Use Insert a stop, or Open the loop in the line panel.' : 'Tap the map near either end of the line to extend it, or tap an existing station. Tap the stop at the other end to close it into a loop.')) + '</span>' +
         (ui.insertMode ? '' : '<button type="button" class="btn small" data-act="undo">Undo</button>') + '<button type="button" class="btn small primary" data-act="done">Done</button>';
     } else if (ui.hint && state && !state.lines.length) {
       b.className = 'banner';
@@ -938,11 +960,32 @@
     return h;
   }
 
+  function achHtml(T, al) {
+    var h = '';
+    T.ACH_GROUPS.forEach(function (g) {
+      var items = al.filter(function (a) { return a.group === g[0]; });
+      if (!items.length) return;
+      h += '<div class="muted small achgroup"><b>' + esc(g[1]) + '</b> · ' + items.filter(function (a) { return a.day; }).length + ' of ' + items.length + '</div><div class="achs">';
+      items.forEach(function (a) {
+        var sub = a.day ? 'Day ' + a.day : (a.frac !== null ? Math.round(a.frac * 100) + '%' : 'Not yet');
+        h += '<div class="ach' + (a.day ? ' got' : '') + '"><span class="achicon">' + a.icon + '</span><span class="achtxt"><b>' + esc(a.title) + '</b><span class="muted small">' + esc(a.desc) + '</span>' +
+          (!a.day && a.frac !== null ? '<span class="bar"><span style="width:' + Math.round(a.frac * 100) + '%;background:#F2C14E"></span></span>' : '') +
+          '</span><span class="muted small achday">' + sub + '</span></div>';
+      });
+      h += '</div>';
+    });
+    return h;
+  }
+
   function sheetGoals() {
     var T = window.TGGoals;
     if (!T) return head('Goals', 'Not available');
     var G = T.ensure(state), m = T.metrics(state), se = T.seasonOf(state.day);
     var h = head('Goals and events', 'Day ' + state.day + ' · ' + se.name + ' (' + se.note + ')');
+    var al = T.achList ? T.achList(state) : [], ad = al.filter(function (a) { return a.day; }).length;
+    h += '<div class="segrow"><button type="button" class="seg' + (ui.goalTab !== 'ach' ? ' on' : '') + '" data-act="goaltab" data-id="goals">Goals</button>' +
+      '<button type="button" class="seg' + (ui.goalTab === 'ach' ? ' on' : '') + '" data-act="goaltab" data-id="ach">Achievements ' + ad + '/' + al.length + '</button></div>';
+    if (ui.goalTab === 'ach') return h + achHtml(T, al);
     var labels = { build: 'Build', numbers: 'Numbers', contract: 'Contract', challenge: 'Challenge' };
     h += '<div class="muted small"><b>Active goals</b>, paid when done</div>';
     G.active.forEach(function (g) {
@@ -1060,7 +1103,7 @@
       profitlow: function (a, b) { return a.ls.profit - b.ls.profit; },
       riders: function (a, b) { return b.ls.riders - a.ls.riders; },
       load: function (a, b) { return b.ls.load - a.ls.load; },
-      stops: function (a, b) { return b.L.stations.length - a.L.stations.length; },
+      stops: function (a, b) { return S.stopCount(b.L) - S.stopCount(a.L); },
       length: function (a, b) { return b.km - a.km; },
       vehicles: function (a, b) { return b.L.vehicles - a.L.vehicles; }
     };
@@ -1077,7 +1120,7 @@
       var L = r.L, ls = r.ls;
       h += '<button type="button" class="card linecard" data-act="selline" data-id="' + L.id + '">' +
         '<span class="lrow"><span class="dot" style="background:' + L.color + '"></span><b>' + lineName(L) + '</b><span class="grow"></span>' + profitHtml(ls.profit) + '/day</span>' +
-        '<span class="muted">' + MODES[L.mode].name + ' · ' + L.stations.length + ' stops · ' + r.km.toFixed(1) + ' km · ' + L.vehicles + ' vehicles' + (r.countries.length ? ' · ' + esc(r.countries.map(function (c) { return c.name; }).slice(0, 2).join(', ')) + (r.countries.length > 2 ? ' +' + (r.countries.length - 2) : '') : '') + (r.hit ? ' · <span class="neg">disrupted</span>' : '') + '</span>' +
+        '<span class="muted">' + MODES[L.mode].name + ' · ' + S.stopCount(L) + ' stops' + (S.isLoop(L) ? ' (loop)' : '') + ' · ' + r.km.toFixed(1) + ' km · ' + L.vehicles + ' vehicles' + (r.countries.length ? ' · ' + esc(r.countries.map(function (c) { return c.name; }).slice(0, 2).join(', ')) + (r.countries.length > 2 ? ' +' + (r.countries.length - 2) : '') : '') + (r.hit ? ' · <span class="neg">disrupted</span>' : '') + '</span>' +
         '<span class="bar"><span style="width:' + Math.min(100, Math.round(ls.load * 100)) + '%;background:' + (ls.load > 0.85 ? '#F28A1E' : '#E9E9E9') + '"></span></span>' +
         '<span class="muted">' + Math.round(ls.load * 100) + '% full at peak · ' + num(ls.riders) + ' riders</span></button>';
     });
@@ -1123,9 +1166,9 @@
     if (!L) return '';
     var m = MODES[L.mode], ls = (state.stats && state.stats.lines[L.id]) || { riders: 0, load: 0, profit: 0, cost: 0 };
     var km = S.lineLenM(state, L) / 1000, lc = S.coverage(state, L.id);
-    var h = head('<span class="dot" style="background:' + L.color + '"></span> ' + lineName(L), m.name + ' · ' + L.stations.length + ' stops · ' + km.toFixed(1) + ' km', 'lines');
+    var h = head('<span class="dot" style="background:' + L.color + '"></span> ' + lineName(L), m.name + ' · ' + S.stopCount(L) + ' stops' + (S.isLoop(L) ? ' · loop' : '') + ' · ' + km.toFixed(1) + ' km', 'lines');
     if (ui.renaming) {
-      h += '<div class="renamerow"><input id="lineNameInput" type="text" maxlength="24" placeholder="Line name" value="' + esc(L.name || '') + '" autocomplete="off"><button type="button" class="btn primary" data-act="saverename">Save</button><button type="button" class="btn" data-act="cancelrename">Cancel</button></div>';
+      h += '<div class="renamerow"><input id="lineNameInput" type="text" maxlength="40" placeholder="Line name" value="' + esc(L.name || '') + '" autocomplete="off"><button type="button" class="btn primary" data-act="saverename">Save</button><button type="button" class="btn" data-act="cancelrename">Cancel</button></div>';
     }
     h += '<div class="stats">' +
       '<div><b>' + num(ls.riders) + '</b><span>riders / day</span></div>' +
@@ -1134,7 +1177,19 @@
       '<div><b>' + fmt(ls.cost) + '</b><span>running cost / day</span></div>' +
       '<div><b>' + num(lc.popReached) + '</b><span>residents near stops</span></div>' +
       '<div><b>' + num(lc.jobsReached) + '</b><span>jobs near stops</span></div></div>';
-    h += '<div class="stepper"><span><b>Vehicles</b> <span class="muted">(' + fmt(m.vehicle) + ' each)</span></span><span class="grow"></span>' +
+    var tier = S.tierOf(L);
+    h += '<div class="tierrow"><span><b>' + esc(tier.name) + '</b> <span class="muted">· ' + S.vehCap(L) + ' places each · ' + fmt(S.vehPrice(L)) + ' to buy · ' + fmt(S.vehDay(L)) + '/day</span></span>' +
+      (S.TIERS[L.mode] ? '<button type="button" class="btn small" data-act="tiers">' + (ui.pickingTier ? 'Close' : 'Change type') + '</button>' : '') + '</div>';
+    if (ui.pickingTier && S.TIERS[L.mode]) {
+      var curT = L.tier === undefined ? S.baseTier(L.mode) : L.tier;
+      h += '<div class="tiers"><span class="muted small">The whole fleet switches at once: the new vehicles are bought and the old ones sold at half price.</span>' + S.TIERS[L.mode].map(function (t, i) {
+        var price = m.vehicle * t.k, day = m.vehicleDay * t.k, sw = S.tierSwitchCost(L, i), on = i === curT;
+        return '<button type="button" class="tier' + (on ? ' on' : '') + '" data-act="settier" data-id="' + i + '"' + (on ? ' disabled' : '') + '>' +
+          '<span class="lrow"><b>' + esc(t.name) + '</b><span class="grow"></span><span>' + t.cap + ' places</span></span>' +
+          '<span class="muted small">' + fmt(price) + ' each · ' + fmt(day) + '/day · ' + (on ? 'in use' : (sw >= 0 ? 'switch ' + L.vehicles + ': ' + fmt(sw) : 'switch ' + L.vehicles + ': ' + fmt(-sw) + ' back')) + '</span></button>';
+      }).join('') + '</div>';
+    }
+    h += '<div class="stepper"><span><b>Vehicles</b> <span class="muted">(' + fmt(S.vehPrice(L)) + ' each)</span></span><span class="grow"></span>' +
       '<button type="button" class="round" data-act="vminus" aria-label="Sell a vehicle">−</button><input id="vehInput" class="vinput" type="number" inputmode="numeric" min="1" max="' + S.BAL.maxVehicles + '" value="' + L.vehicles + '" aria-label="Number of vehicles">' +
       '<button type="button" class="round primary" data-act="vplus" aria-label="Buy a vehicle">+</button></div>';
     if (ui.pickingColor) {
@@ -1144,7 +1199,7 @@
     }
     h += '<div class="btnrow"><button type="button" class="btn primary" data-act="edit">Add stops</button>' +
       (L.stations.length >= 2 ? '<button type="button" class="btn" data-act="insert">Insert a stop</button>' : '') +
-      '<button type="button" class="btn" data-act="undo">Undo last stop</button>' +
+      (S.isLoop(L) ? '<button type="button" class="btn" data-act="openloop">Open the loop</button>' : '<button type="button" class="btn" data-act="undo">Undo last stop</button>') +
       '<button type="button" class="btn" data-act="rename">Rename</button>' +
       '<button type="button" class="btn" data-act="colour">Colour</button>' +
       '<button type="button" class="btn" data-act="reverse">Reverse</button>' +
@@ -1164,9 +1219,18 @@
     h += '<div class="chips">' + serving.map(function (L) { return '<span class="chip"><span class="dot" style="background:' + L.color + '"></span>' + lineName(L) + '</span>'; }).join('') + '</div>';
     if (serving.length) {
       h += '<div class="rmlines">' + serving.map(function (L) {
-        var can = L.stations.length > 2;
+        var can = S.isLoop(L) ? S.stopCount(L) > 3 : L.stations.length > 2;
         return '<button type="button" class="btn small" data-act="rmfromline" data-id="' + L.id + '"' + (can ? '' : ' disabled title="A line needs two stops"') + '>Remove from ' + lineName(L) + '</button>';
       }).join('') + '</div>';
+    }
+    var walks = ((state.stats && state.stats.walk) || []).filter(function (w) { return w.a === s.id || w.b === s.id; });
+    if (walks.length) {
+      var sm2 = S.stationMap(state);
+      h += '<p class="muted small">Walking interchange: ' + walks.map(function (w) {
+        var o = sm2.get(w.a === s.id ? w.b : w.a); if (!o) return '';
+        var ol = state.lines.filter(function (L) { return L.stations.indexOf(o.id) >= 0 && L.stations.length >= 2; }).map(function (L) { return '<span class="dot" style="background:' + L.color + '"></span>'; }).join('');
+        return '<b>' + esc(o.name) + '</b> ' + ol + ' (' + w.m + ' m, ' + Math.max(1, Math.round(w.m / S.BAL.walkSpeed)) + ' min walk)';
+      }).join(', ') + '</p>';
     }
     h += '<div class="stats"><div><b>' + num(pop) + '</b><span>residents nearby</span></div><div><b>' + num(jobs) + '</b><span>jobs nearby</span></div>' +
       '<div><b>' + num(waiting) + '</b><span>left behind / day</span></div></div>';
@@ -1208,6 +1272,7 @@
         break;
       case 'clearlv': lv().mode = 'all'; lv().status = 'all'; lv().country = 'all'; lv().q = ''; saveLv(); renderSheet(); break;
       case 'selstation': selectStation(id); break;
+      case 'goaltab': ui.goalTab = t.getAttribute('data-id'); renderSheet(); break;
       case 'skipgoal': {
         var sk = TGGoals.skip(state, id);
         if (sk) { toast('Skipped: ' + sk.title); scheduleSave(); renderSheet(); }
@@ -1233,7 +1298,7 @@
       case 'cancelrename': ui.renaming = false; renderSheet(); break;
       case 'saverename':
         var li = $('lineNameInput'), ln = S.lineById(state, ui.selLine);
-        if (ln && li) { var nm = li.value.trim().slice(0, 24); if (nm) ln.name = nm; else delete ln.name; }
+        if (ln && li) { var nm = li.value.trim().slice(0, 40); if (nm) ln.name = nm; else delete ln.name; }
         ui.renaming = false; renderSheet(); renderBanner(); scheduleSave(); break;
       case 'newline': ui.sheet = 'newline'; renderSheet(); break;
       case 'export': exportSave(); break;
@@ -1250,6 +1315,14 @@
         }
         startEditing(res.id); afterChange(); break;
       case 'colour': ui.pickingColor = !ui.pickingColor; renderSheet(); break;
+      case 'tiers': ui.pickingTier = !ui.pickingTier; renderSheet(); break;
+      case 'settier': {
+        var Lt = S.lineById(state, ui.selLine), ti = +t.getAttribute('data-id'), tt = Lt && S.TIERS[Lt.mode][ti];
+        var rt = S.setTier(state, ui.selLine, ti);
+        if (rt.ok) { ui.pickingTier = false; toast(lineName(Lt) + ' now runs ' + tt.name + (rt.cost >= 0 ? ', ' + fmt(rt.cost) : ', ' + fmt(-rt.cost) + ' back')); afterChange(); }
+        else toast(rt.msg);
+        renderSheet(); break;
+      }
       case 'setcolor': setLineColor(t.getAttribute('data-color')); break;
       case 'edit': startEditing(ui.selLine); break;
       case 'insert': startEditing(ui.selLine); ui.insertMode = true; renderBanner(); toast('Tap the map: the stop joins the nearest part of the line'); break;
@@ -1259,6 +1332,7 @@
         if (!res.ok) toast(res.msg); else afterChange();
         break;
       case 'reverse': S.reverseLine(state, ui.selLine); afterChange(); break;
+      case 'openloop': { var ro = S.openLoop(state, ui.selLine); if (ro.ok) { toast('Loop opened, ' + fmt(ro.refund) + ' back'); afterChange(); } break; }
       case 'delete':
         if (window.confirm('Delete this line? You get half the vehicle cost back.')) { S.deleteLine(state, ui.selLine); ui.selLine = null; ui.sheet = 'lines'; afterChange(); }
         break;
@@ -1346,7 +1420,7 @@
     $('start').className = 'overlay hidden';
     $('over').className = 'overlay hidden';
     relayout(); state.stats = S.computeNetwork(state);
-    if (window.TGGoals) { TGGoals.ensure(state); TGGoals.check(state); }
+    if (window.TGGoals) { TGGoals.ensure(state); var evs0 = TGGoals.check(state); setTimeout(function () { handleEvents(evs0.filter(function (e) { return e.type === 'ach' || e.type === 'achBulk'; })); }, 1500); }
     updateHud(); renderDock(); renderSheet(); renderBanner();
     state.stations.forEach(function (x) { if (x.named && !x.custom && /^[A-Za-z]?\d{1,4}[A-Za-z]?$/.test(String(x.name).trim())) { x.named = false; x.name = 'Stop ' + x.id; } });
     nameQueue = []; queueUnnamed();
@@ -1911,5 +1985,5 @@
     });
     ctx = old;
   }
-  window.TG = { shapeSheet: shapeSheet, get state() { return state; }, ui: ui, get gfx() { return gfx; }, get map() { return map; } };
+  window.TG = { shapeSheet: shapeSheet, get state() { return state; }, ui: ui, get gfx() { return gfx; }, get map() { return map; }, get V() { return V; } };
 })();
